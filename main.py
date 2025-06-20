@@ -2069,6 +2069,7 @@ def handle_resize(new_width: int, new_height: int) -> None:
                 )
 
             create_vignette()
+            create_starfield()  # ADD THIS LINE
         except (pygame.error, MemoryError) as e:
             print(f"[handle_resize] Failed to resize: {e}")
             g_screen_width, g_screen_height = old_width, old_height
