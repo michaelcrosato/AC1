@@ -1,7 +1,7 @@
 """
 ASTEROIDS ENHANCED - A Single-File Game Optimized for LLM Development
-Version: 7.1.1 (Code Quality & Linting Edition)
-Last Updated: June 20, 2025
+Version: 7.1.2 (Production Code Quality Edition)
+Last Updated: December 26, 2024
 Lead Programmer: Claude 4 Opus/Sonnet (Anthropic)
 Code Reviewers: ChatGPT 4o/4.1, Grok 3, Gemini 2.5 Pro
 
@@ -6692,7 +6692,7 @@ def init_sounds() -> None:
             if start + duration <= len(crystal_sound):
                 tone = generate_sound(0.15, freq, "sine")
                 tone = apply_envelope(tone, "exp", 3)
-                crystal_sound[start: start + len(tone)] += tone * 0.4
+                crystal_sound[start : start + len(tone)] += tone * 0.4
 
         sound = numpy_to_pygame_sound(
             crystal_sound * Cfg.powerup_volume * Cfg.sound_master_volume
@@ -6887,8 +6887,25 @@ def get_interpolated_position(obj: Any) -> Tuple[float, float, float]:
     alpha = g_game_state.get("render_alpha", 1.0)
 
     if hasattr(obj, "prev_x"):
-        x = obj.prev_x + (obj.x - obj.prev_x) * alpha
-        y = obj.prev_y + (obj.y - obj.prev_y) * alpha
+        dx = obj.x - obj.prev_x
+        dy = obj.y - obj.prev_y
+
+        # Detect screen wrapping to prevent ghost outlines
+        # If the position change is more than half the screen size, wrapping occurred
+        half_width = g_screen_width * 0.5
+        half_height = g_screen_height * 0.5
+
+        if abs(dx) > half_width:
+            # X-axis wrapping detected - use current position to avoid ghost trail
+            x = obj.x
+        else:
+            x = obj.prev_x + dx * alpha
+
+        if abs(dy) > half_height:
+            # Y-axis wrapping detected - use current position to avoid ghost trail
+            y = obj.y
+        else:
+            y = obj.prev_y + dy * alpha
 
         # Handle angle wraparound for smooth rotation
         if hasattr(obj, "angle") and hasattr(obj, "prev_angle"):
