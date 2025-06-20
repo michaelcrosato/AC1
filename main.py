@@ -4060,7 +4060,7 @@ def update_enemy_bullets() -> None:
         # Add trail point and maintain length limit (fixes memory leak)
         bullet.trail.append((bullet.x, bullet.y))
         if len(bullet.trail) > Cfg.enemy_bullet_trail_length:
-            bullet.trail.pop(0)
+            bullet.trail.popleft()  # FIX: Use popleft() for deque, not pop(0)
 
         # Clear trail for off-screen bullets to save memory
         if not (0 <= bullet.x <= g_screen_width and 0 <= bullet.y <= g_screen_height):
@@ -6952,7 +6952,7 @@ def update_physics_only(dt: float) -> None:
         enemy.x += enemy.vx * g_game_state["time_scale"]
         enemy.y += enemy.vy * g_game_state["time_scale"]
         wrap_position(enemy)
-        enemy.fire_cooldown -= dt * 60
+        # FIX: Remove fire_cooldown decrement - handled by update_enemy_shooting()
         if enemy.hit_flash > 0:
             enemy.hit_flash -= dt * 60
 
@@ -6978,6 +6978,7 @@ def update_ai_systems(dt: float) -> None:
     """
     for enemy in g_enemies:
         update_enemy_ai(enemy)
+        update_enemy_shooting(enemy)  # FIX: Add missing enemy shooting
 
 
 def update_complex_particles(dt: float) -> None:
