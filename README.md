@@ -142,4 +142,4 @@ This project is open source. Feel free to use, modify, and distribute.
 
 ---
 
-**Asteroids Enhanced** - A modern take on a timeless classic! 🚀✨ 
+**Asteroids Enhanced** - A modern take on a timeless classic! 🚀✨
