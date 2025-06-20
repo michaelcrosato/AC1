@@ -420,6 +420,15 @@ class Cfg:
     powerup_area_scaling_factor: float = 0.3
     powerup_hexagon_vertices: int = 6
 
+    # Magnetic Crystal Collection settings
+    crystal_attraction_radius: float = 150  # Base radius in pixels
+    crystal_attraction_force: float = 0.2  # Base attraction strength
+    crystal_friction: float = 0.98  # Velocity damping to prevent overshoot
+    crystal_min_collect_distance: float = (
+        15.0  # Auto-collect when this close (prevents orbiting)
+    )
+    crystal_max_velocity: float = 10.0  # Maximum crystal velocity (safety clamp)
+
     # Particle system
     particle_limit: int = 500
     particle_base_life: int = 30
@@ -895,6 +904,39 @@ def check_collision(obj1: Any, obj2: Any, r1: float, r2: float) -> bool:
         True if objects are colliding
     """
     return distance_squared(obj1, obj2) < (r1 + r2) ** 2
+
+
+def wrapped_delta(
+    pos1: Tuple[float, float], pos2: Tuple[float, float]
+) -> Tuple[float, float]:
+    """Calculate delta between two positions considering screen wrap-around.
+
+    This ensures crystals are attracted via the shortest path, even across screen edges.
+
+    Args:
+        pos1: First position (x, y) - typically ship position
+        pos2: Second position (x, y) - typically crystal position
+
+    Returns:
+        (dx, dy) tuple representing the shortest wrapped delta
+
+    Example:
+        Ship at (50, 300), Crystal at (750, 300) on 800px wide screen
+        Normal delta: (-700, 0)
+        Wrapped delta: (100, 0) - crystal is actually closer going left
+    """
+    dx = pos1[0] - pos2[0]
+    dy = pos1[1] - pos2[1]
+
+    # Check if wrapping horizontally would be shorter
+    if abs(dx) > g_screen_width / 2:
+        dx = dx - g_screen_width if dx > 0 else dx + g_screen_width
+
+    # Check if wrapping vertically would be shorter
+    if abs(dy) > g_screen_height / 2:
+        dy = dy - g_screen_height if dy > 0 else dy + g_screen_height
+
+    return dx, dy
 
 
 def get_ship_points(
@@ -1490,7 +1532,8 @@ def validate_save_data(save_data: dict) -> bool:
             return False
         if not isinstance(save_data[save_field], expected_types):
             print(
-                f"[validate_save_data] Invalid type for {save_field}: expected {expected_types}, got {type(save_data[save_field])}"
+                f"[validate_save_data] Invalid type for {save_field}: "
+                f"expected {expected_types}, got {type(save_data[save_field])}"
             )
             return False
 
@@ -4086,6 +4129,97 @@ def update_powerups() -> None:
     g_powerups = [p for p in g_powerups if p.lifetime > 0]
 
 
+def update_crystal_attraction(dt: float) -> None:
+    """Update crystal magnetic attraction at 30Hz.
+
+    CRITICAL: This function MUST run at exactly 30Hz via update_complex_particles.
+    The physics calculations and friction are specifically tuned for this update rate.
+    Changing the update frequency will break the attraction behavior.
+
+    Args:
+        dt: Delta time for this update (should be ~0.033s for 30Hz)
+
+    Side effects:
+        Modifies powerup velocities for attraction effect
+        Sets powerup.attraction_strength for visual feedback
+
+    Globals:
+        Reads g_powerups, g_ship, g_game_state, g_scale_factor
+        Writes to powerup.vx, powerup.vy, powerup.attraction_strength
+    """
+    # Early exit if feature disabled
+    if Cfg.crystal_attraction_radius <= 0:
+        return
+
+    # Reset attraction strength for all powerups (for visual feedback)
+    for powerup in g_powerups:
+        if hasattr(powerup, "attraction_strength"):
+            powerup.attraction_strength = 0.0
+
+    for powerup in g_powerups:
+        # Only attract crystals when ship is in normal state
+        if (
+            powerup.type == PowerUpType.CRYSTAL
+            and g_ship.respawning == 0
+            and g_ship.dashing == 0
+            and not g_game_state["finisher"]["executing"]
+            and not g_game_state["game_over"]
+        ):
+
+            # Calculate wrapped delta for shortest path
+            dx, dy = wrapped_delta((g_ship.x, g_ship.y), (powerup.x, powerup.y))
+            dist_sq = dx * dx + dy * dy
+
+            # Check for auto-collection at very close range
+            min_collect_dist = Cfg.crystal_min_collect_distance * g_scale_factor
+            if dist_sq < min_collect_dist**2:
+                # Snap to ship position for immediate collection
+                powerup.x = g_ship.x
+                powerup.y = g_ship.y
+                continue
+
+            # Scale attraction radius with screen size
+            attraction_radius = Cfg.crystal_attraction_radius * g_scale_factor
+
+            # Check if within attraction range
+            if dist_sq < attraction_radius**2:
+                # Calculate actual distance and normalized direction
+                dist = math.sqrt(dist_sq)
+                direction_x = dx / dist
+                direction_y = dy / dist
+
+                # Attraction force uses inverse square curve for natural feel
+                # Stronger when closer: force = base * (1 - distance/max_radius)²
+                distance_ratio = dist / attraction_radius
+                force_multiplier = (1.0 - distance_ratio) ** 2
+
+                # Store attraction strength for visual feedback (0-1 range)
+                powerup.attraction_strength = 1.0 - distance_ratio
+
+                # Apply attraction as impulse with proper scaling
+                attraction_impulse = (
+                    Cfg.crystal_attraction_force * force_multiplier * g_scale_factor
+                )  # Scale force with screen size
+
+                # Apply impulse to velocity
+                powerup.vx += direction_x * attraction_impulse
+                powerup.vy += direction_y * attraction_impulse
+
+                # Apply frame-rate independent friction
+                # Exponential decay: friction^(dt * target_fps)
+                friction_factor = Cfg.crystal_friction ** (dt * 30)  # 30 = target Hz
+                powerup.vx *= friction_factor
+                powerup.vy *= friction_factor
+
+                # Clamp velocity to prevent simulation instability
+                max_vel = Cfg.crystal_max_velocity * g_scale_factor
+                speed_sq = powerup.vx**2 + powerup.vy**2
+                if speed_sq > max_vel**2:
+                    speed = math.sqrt(speed_sq)
+                    powerup.vx = (powerup.vx / speed) * max_vel
+                    powerup.vy = (powerup.vy / speed) * max_vel
+
+
 # === [VISUAL EFFECTS] ===
 
 
@@ -4791,6 +4925,26 @@ def draw_powerups(surface: pygame.Surface) -> None:
 
         DrawEffects.glow(surface, (x, y), 25 * pulse * g_scale_factor, color, pulse)
 
+        # Additional glow for attracted crystals
+        if (
+            powerup.type == PowerUpType.CRYSTAL
+            and hasattr(powerup, "attraction_strength")
+            and powerup.attraction_strength > 0
+        ):
+            # Scale attraction glow with attraction strength
+            attraction_glow_radius = (
+                15 + 10 * powerup.attraction_strength
+            ) * g_scale_factor
+            attraction_color = (100, 200, 255)  # Blue tint for magnetic attraction
+            attraction_intensity = powerup.attraction_strength * 0.8
+            DrawEffects.glow(
+                surface,
+                (x, y),
+                attraction_glow_radius,
+                attraction_color,
+                attraction_intensity,
+            )
+
         symbol_text = g_small_font.render(
             Cfg.powerup_types[powerup.type]["symbol"], True, color
         )
@@ -4805,7 +4959,9 @@ def draw_powerups(surface: pygame.Surface) -> None:
         if powerup.type == PowerUpType.CRYSTAL:
             points = []
             angle = powerup.pulse * 50
-            crystal_radius = scaled(Cfg.powerup_visual_radius) * 0.5  # Half size for crystals
+            crystal_radius = (
+                scaled(Cfg.powerup_visual_radius) * 0.5
+            )  # Half size for crystals
             for i in range(4):
                 point_angle = angle + i * 90
                 sin_a, cos_a = get_sin_cos(point_angle)
@@ -7000,6 +7156,10 @@ def update_complex_particles(dt: float) -> None:
         if particle.active:
             update_particle_attraction(particle, dt)
 
+    # Update crystal attraction at same rate as particle attraction (30Hz)
+    # CRITICAL: This MUST remain at 30Hz - see update_crystal_attraction() docs
+    update_crystal_attraction(dt)
+
 
 def update_ui_systems(dt: float) -> None:
     """Update UI elements at reduced frequency.
@@ -7335,6 +7495,89 @@ def handle_game_keys(event: pygame.event.Event) -> None:
             g_screen_width // 2,
             g_screen_height // 2 + 30,
             f"Performance Debug: {status}",
+            Cfg.colors["white"],
+        )
+    # === CRYSTAL ATTRACTION DEBUG KEYS (F3-F8) ===
+    elif event.key == pygame.K_F3:
+        # Toggle crystal attraction feature
+        if Cfg.crystal_attraction_radius > 0:
+            Cfg.crystal_attraction_radius = 0
+            print("[DEBUG] Crystal Attraction: DISABLED")
+            create_floating_text(
+                g_screen_width // 2,
+                g_screen_height // 2 + 60,
+                "Crystal Attraction: OFF",
+                (255, 100, 100),
+            )
+        else:
+            Cfg.crystal_attraction_radius = 150
+            print("[DEBUG] Crystal Attraction: ENABLED")
+            create_floating_text(
+                g_screen_width // 2,
+                g_screen_height // 2 + 60,
+                "Crystal Attraction: ON",
+                (100, 255, 100),
+            )
+    elif event.key == pygame.K_F4:
+        # Adjust attraction radius
+        Cfg.crystal_attraction_radius = max(
+            50, min(400, Cfg.crystal_attraction_radius + 25)
+        )
+        print(f"[DEBUG] Crystal Radius: {Cfg.crystal_attraction_radius}")
+        create_floating_text(
+            g_screen_width // 2,
+            g_screen_height // 2 + 90,
+            f"Radius: {Cfg.crystal_attraction_radius}",
+            Cfg.colors["crystal"],
+        )
+    elif event.key == pygame.K_F5:
+        # Adjust attraction radius (decrease)
+        Cfg.crystal_attraction_radius = max(
+            50, min(400, Cfg.crystal_attraction_radius - 25)
+        )
+        print(f"[DEBUG] Crystal Radius: {Cfg.crystal_attraction_radius}")
+        create_floating_text(
+            g_screen_width // 2,
+            g_screen_height // 2 + 90,
+            f"Radius: {Cfg.crystal_attraction_radius}",
+            Cfg.colors["crystal"],
+        )
+    elif event.key == pygame.K_F6:
+        # Adjust attraction force
+        Cfg.crystal_attraction_force = max(
+            0.05, min(1.0, Cfg.crystal_attraction_force + 0.05)
+        )
+        print(f"[DEBUG] Crystal Force: {Cfg.crystal_attraction_force:.2f}")
+        create_floating_text(
+            g_screen_width // 2,
+            g_screen_height // 2 + 120,
+            f"Force: {Cfg.crystal_attraction_force:.2f}",
+            Cfg.colors["gold"],
+        )
+    elif event.key == pygame.K_F7:
+        # Adjust attraction force (decrease)
+        Cfg.crystal_attraction_force = max(
+            0.05, min(1.0, Cfg.crystal_attraction_force - 0.05)
+        )
+        print(f"[DEBUG] Crystal Force: {Cfg.crystal_attraction_force:.2f}")
+        create_floating_text(
+            g_screen_width // 2,
+            g_screen_height // 2 + 120,
+            f"Force: {Cfg.crystal_attraction_force:.2f}",
+            Cfg.colors["gold"],
+        )
+    elif event.key == pygame.K_F8:
+        # Reset crystal attraction to defaults
+        Cfg.crystal_attraction_radius = 150
+        Cfg.crystal_attraction_force = 0.2
+        Cfg.crystal_friction = 0.98
+        Cfg.crystal_min_collect_distance = 15.0
+        Cfg.crystal_max_velocity = 10.0
+        print("[DEBUG] Crystal Attraction: RESET TO DEFAULTS")
+        create_floating_text(
+            g_screen_width // 2,
+            g_screen_height // 2 + 150,
+            "Crystal Settings: RESET",
             Cfg.colors["white"],
         )
 
