@@ -5,7 +5,7 @@ Last Updated: June 20, 2025
 Lead Programmer: Claude 4 Opus/Sonnet (Anthropic)
 Code Reviewers: ChatGPT 4o/4.1, Grok 3, Gemini 2.5 Pro
 
-LATEST CRITICAL FIXES & IMPROVEMENTS (v7.1.0):
+LATEST CRITICAL FIXES & IMPROVEMENTS (v7.1.1):
 ✅ PERFORMANCE OPTIMIZATIONS:
 - Fixed redundant spatial grid rebuilds (30% CPU reduction on large levels)
 - Eliminated ParticlePool memory leak with Set-based inactive tracking
@@ -2642,26 +2642,38 @@ def shoot_bullet(
     enemy_y: float = 0.0,
     enemy_angle: float = 0.0,
 ) -> None:
-    """Fire a bullet from ship or enemy.
-
+    """Fire a bullet from ship or enemy with sound failure fallback.
+    
     Args:
         is_enemy: True if enemy is shooting
         enemy_x: Enemy X position
         enemy_y: Enemy Y position
         enemy_angle: Enemy angle
-
+        
     Side effects:
         Appends to g_bullets or g_enemy_bullets, plays sound, creates particles,
-        sets g_game_state['bullet_cooldown']
-
+        sets g_game_state['bullet_cooldown'], provides visual feedback on sound failure
+        
     Globals:
         Reads g_ship, writes to g_bullets, g_enemy_bullets, g_game_state, g_particle_pool
     """
     global g_ship
     if is_enemy:
-        play_sound("enemy_shoot", enemy_x, 0.7)
+        if not play_sound("enemy_shoot", enemy_x, 0.7):
+            # Sound failed - add visual emphasis
+            for _ in range(5):  # Extra muzzle flash particles
+                particle = g_particle_pool.get()
+                if particle:
+                    particle.x = enemy_x
+                    particle.y = enemy_y
+                    particle.vx = random.uniform(-2, 2) * g_scale_factor
+                    particle.vy = random.uniform(-2, 2) * g_scale_factor
+                    particle.life = 15
+                    particle.color = (255, 150, 150)
+                    particle.type = None
+        
         sin_a, cos_a = get_sin_cos(enemy_angle)
-
+        
         bullet_x = enemy_x + scaled(Cfg.ship_nose_length) * cos_a
         bullet_y = enemy_y + scaled(Cfg.ship_nose_length) * sin_a
         bullet = Bullet(
@@ -2676,12 +2688,15 @@ def shoot_bullet(
         bullet.prev_y = bullet_y
         g_enemy_bullets.append(bullet)
     else:
-        play_sound("shoot", g_ship.x, 1.0)
-
+        if not play_sound("shoot", g_ship.x, 1.0):
+            # Sound failed - add visual feedback
+            g_ship.powerup_flash = 5  # Brief flash
+            g_ship.powerup_flash_color = (255, 255, 100)
+        
         sin_a, cos_a = get_sin_cos(g_ship.angle)
         flash_x = g_ship.x + scaled(Cfg.ship_nose_length) * cos_a
         flash_y = g_ship.y + scaled(Cfg.ship_nose_length) * sin_a
-
+        
         # Muzzle flash particles
         particle_count = (
             Cfg.particle_muzzle_flash_triple
@@ -2702,12 +2717,12 @@ def shoot_bullet(
                     (255, 255, 150) if g_ship.rapid_fire > 0 else (255, 200, 100)
                 )
                 particle.type = None
-
+        
         if g_ship.triple_shot > 0:
             for angle_offset in [-Cfg.triple_shot_spread, 0, Cfg.triple_shot_spread]:
                 angle = g_ship.angle + angle_offset
                 sin_a, cos_a = get_sin_cos(angle)
-
+                
                 bullet_x = g_ship.x + scaled(Cfg.ship_nose_length) * cos_a
                 bullet_y = g_ship.y + scaled(Cfg.ship_nose_length) * sin_a
                 bullet = Bullet(
@@ -2736,7 +2751,7 @@ def shoot_bullet(
             bullet.prev_x = bullet_x
             bullet.prev_y = bullet_y
             g_bullets.append(bullet)
-
+        
         fire_rate_mult = get_fire_rate_multiplier()
         base_rate = (
             Cfg.rapid_fire_rate if g_ship.rapid_fire > 0 else Cfg.normal_fire_rate
@@ -3102,42 +3117,48 @@ def handle_collisions() -> None:
 
 def handle_bullet_collisions() -> None:
     """Handle all bullet-related collisions using spatial grid optimization.
-
+    
     Side effects:
         Removes bullets, asteroids, enemies; creates explosions and powerups;
         updates score and combo
-
+        
     Globals:
-        Reads/writes g_bullets, g_asteroids, g_enemies, uses g_spatial_grid
+        Reads/writes g_bullets, g_asteroids, g_enemies, g_enemy_bullets, uses g_spatial_grid
     """
     global g_bullets, g_asteroids, g_enemies
-
-    # NOTE: Spatial grid rebuild is centralized here at 60Hz - no other rebuild needed
-    # Build spatial grid for this frame
+    
+    # Build spatial grid for this frame - ONLY place grid is rebuilt
     g_spatial_grid.clear()
-
-    # Insert all collidable objects
+    
+    # Insert all collidable objects including enemy bullets
     for asteroid in g_asteroids:
         g_spatial_grid.insert(asteroid, asteroid.radius)
     for enemy in g_enemies:
         g_spatial_grid.insert(enemy, enemy.radius)
-
+    # FIX: Insert enemy bullets for ship collision checks
+    for bullet in g_enemy_bullets:
+        g_spatial_grid.insert(bullet, scaled(Cfg.bullet_radius))
+    
     bullets_to_remove = set()
     asteroids_to_remove = set()
     asteroids_to_add = []
     enemies_to_remove = set()
-
-    # Check each bullet against nearby objects only
+    
+    # Check each player bullet against nearby objects only
     for i, bullet in enumerate(g_bullets):
         if i in bullets_to_remove:
             continue
-
+            
         # Get only nearby objects instead of checking all
         nearby_objects = g_spatial_grid.get_nearby_objects(
             bullet, scaled(Cfg.bullet_radius)
         )
-
+        
         for obj, obj_radius in nearby_objects:
+            # Skip enemy bullets in player bullet checks
+            if isinstance(obj, Bullet):
+                continue
+                
             # Handle asteroid collision
             if isinstance(obj, Asteroid):
                 margin = scaled(Cfg.asteroid_collision_margin)
@@ -3145,7 +3166,7 @@ def handle_bullet_collisions() -> None:
                     bullet, obj, scaled(Cfg.bullet_radius), obj_radius + margin
                 ):
                     bullets_to_remove.add(i)
-
+                    
                     # Find asteroid index for compatibility
                     try:
                         j = g_asteroids.index(obj)
@@ -3156,12 +3177,12 @@ def handle_bullet_collisions() -> None:
                     except ValueError:
                         pass  # Asteroid was already removed
                     break
-
+                    
             # Handle enemy collision
             elif isinstance(obj, Enemy):
                 if check_collision(bullet, obj, scaled(Cfg.bullet_radius), obj_radius):
                     bullets_to_remove.add(i)
-
+                    
                     try:
                         j = g_enemies.index(obj)
                         if j not in enemies_to_remove:
@@ -3169,7 +3190,7 @@ def handle_bullet_collisions() -> None:
                     except ValueError:
                         pass
                     break
-
+    
     # Apply removals
     g_bullets = [b for i, b in enumerate(g_bullets) if i not in bullets_to_remove]
     g_asteroids = [a for i, a in enumerate(g_asteroids) if i not in asteroids_to_remove]
@@ -3242,25 +3263,34 @@ def handle_ship_enemy_collisions() -> None:
 
 
 def handle_ship_bullet_collisions() -> None:
-    """Check for ship-enemy bullet collisions.
-
+    """Check for ship-enemy bullet collisions using spatial grid.
+    
     Side effects:
         Removes enemy bullets, calls handle_ship_damage()
-
+        
     Globals:
-        Reads g_ship, reads/writes g_enemy_bullets
+        Reads g_ship, reads/writes g_enemy_bullets, uses g_spatial_grid
     """
     global g_enemy_bullets
     enemy_bullets_to_remove = set()
-
-    for i, bullet in enumerate(g_enemy_bullets):
-        if check_collision(
-            g_ship, bullet, scaled(Cfg.ship_radius), scaled(Cfg.bullet_radius) * 2
-        ):
-            enemy_bullets_to_remove.add(i)
-            if handle_ship_damage():
-                break
-
+    
+    # Use spatial grid for efficient collision detection
+    nearby_objects = g_spatial_grid.get_nearby_objects(g_ship, scaled(Cfg.ship_radius))
+    
+    for obj, obj_radius in nearby_objects:
+        # Any Bullet in the grid MUST be an enemy bullet (we only insert enemy bullets)
+        if isinstance(obj, Bullet):
+            if check_collision(
+                g_ship, obj, scaled(Cfg.ship_radius), obj_radius * 2
+            ):
+                try:
+                    i = g_enemy_bullets.index(obj)
+                    enemy_bullets_to_remove.add(i)
+                    if handle_ship_damage():
+                        break
+                except ValueError:
+                    pass  # Bullet already removed
+    
     g_enemy_bullets = [
         b for i, b in enumerate(g_enemy_bullets) if i not in enemy_bullets_to_remove
     ]
@@ -3794,35 +3824,37 @@ def update_enemies() -> None:
 
 
 def update_enemy_ai(enemy: Enemy) -> None:
-    """Update enemy AI behavior.
-
+    """Update enemy AI behavior with division by zero protection.
+    
     Args:
         enemy: Enemy to update
-
+        
     Side effects:
         Modifies enemy velocity and angle
-
+        
     Globals:
         Reads g_ship, g_game_state['time_scale']
     """
     dx = g_ship.x - enemy.x
     dy = g_ship.y - enemy.y
     distance = math.sqrt(dx * dx + dy * dy)
-
-    # Prevent division by zero with robust minimum distance threshold
-    MIN_SAFE_DISTANCE = 1.0  # Pixels - prevents near-zero division
-    if distance > MIN_SAFE_DISTANCE:
+    
+    # Robust division by zero protection
+    MIN_SAFE_DISTANCE = 0.01  # Smaller than any real game distance
+    if distance < MIN_SAFE_DISTANCE:
+        # Objects are overlapping - use random direction
+        angle = random.uniform(0, 2 * math.pi)
+        dx, dy = math.cos(angle), math.sin(angle)
+        distance = MIN_SAFE_DISTANCE  # Set minimum for calculations
+    else:
         dx /= distance
         dy /= distance
-    else:
-        # Handle zero/near-zero distance case - use default direction
-        dx, dy = 1.0, 0.0  # Default direction pointing right
-
+    
     min_distance = Cfg.enemy_min_distance * g_scale_factor
     ai_config = Cfg.enemy_ai[enemy.ai_type.value]
-
+    
     if enemy.ai_type == EnemyAIType.HUNTER:
-        # --- [Hunter AI: approach or retreat based on distance] ---
+        # Hunter AI: approach or retreat based on distance
         if distance > min_distance:
             rate = (
                 ai_config["approach_rate"]
@@ -3840,19 +3872,19 @@ def update_enemy_ai(enemy: Enemy) -> None:
             enemy.vx -= dx * rate
             enemy.vy -= dy * rate
     else:  # Circler
-        # --- [Circler AI: orbit around player] ---
+        # Circler AI: orbit around player
         enemy.orbit_angle += ai_config["orbit_speed"] * g_game_state["time_scale"]
         orbit_radius = ai_config["orbit_radius"] * g_scale_factor
-
+        
         orbit_cos, orbit_sin = get_sin_cos(enemy.orbit_angle)
         target_x = g_ship.x + orbit_cos * orbit_radius
         target_y = g_ship.y + orbit_sin * orbit_radius
-
+        
         dx_target = target_x - enemy.x
         dy_target = target_y - enemy.y
         dist = math.sqrt(dx_target * dx_target + dy_target * dy_target)
-
-        # Prevent division by zero with robust minimum distance threshold
+        
+        # Same protection for orbit calculations
         if dist > MIN_SAFE_DISTANCE:
             rate = (
                 ai_config["approach_rate"]
@@ -3861,7 +3893,7 @@ def update_enemy_ai(enemy: Enemy) -> None:
             )
             enemy.vx += (dx_target / dist) * rate
             enemy.vy += (dy_target / dist) * rate
-
+    
     enemy.angle = math.degrees(math.atan2(dy, dx))
 
 
