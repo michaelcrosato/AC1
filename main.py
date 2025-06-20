@@ -795,7 +795,7 @@ g_game_state = {
 }
 
 # Ship state (initialized in init_ship_state())
-g_ship: ShipState
+g_ship: Optional[ShipState] = None
 
 # Game objects
 g_asteroids: List[Asteroid] = []
@@ -1507,9 +1507,7 @@ def save_game_state() -> bool:
     try:
         # Create a copy of the game state with sets converted to lists for JSON serialization
         save_data = g_game_state.copy()
-        save_data["achievements_unlocked"] = list(
-            g_game_state["achievements_unlocked"]
-        )
+        save_data["achievements_unlocked"] = list(g_game_state["achievements_unlocked"])
 
         # Convert FinisherPhase enum to string for JSON serialization
         if "finisher" in save_data and "phase" in save_data["finisher"]:
@@ -1536,8 +1534,6 @@ def load_game_state() -> bool:
     Globals:
         Reads/writes g_game_state
     """
-    global g_game_state
-
     if not os.path.exists(Cfg.save_file):
         return False
 
@@ -1557,9 +1553,9 @@ def load_game_state() -> bool:
                             g_game_state["upgrade_levels"][upgrade_type] = level
                 elif key == "achievements_unlocked":
                     # Convert list back to set and merge with existing achievements
-                    g_game_state["achievements_unlocked"] = set(value) | g_game_state[
-                        "achievements_unlocked"
-                    ]
+                    g_game_state["achievements_unlocked"] = (
+                        set(value) | g_game_state["achievements_unlocked"]
+                    )
                 elif key == "finisher" and isinstance(value, dict) and "phase" in value:
                     # Convert finisher phase string back to enum
                     g_game_state[key] = value.copy()
@@ -1864,12 +1860,12 @@ def init_ship_state() -> ShipState:
     """
     global g_ship
     g_ship = ShipState(x=g_screen_width // 2, y=g_screen_height // 2)
-    
+
     # Initialize prev_ attributes for smooth interpolation
     g_ship.prev_x = g_ship.x
     g_ship.prev_y = g_ship.y
     g_ship.prev_angle = g_ship.angle
-    
+
     return g_ship
 
 
@@ -2059,8 +2055,9 @@ def handle_resize(new_width: int, new_height: int) -> None:
             # Reinitialize spatial grid with new dimensions
             global g_spatial_grid
             if g_spatial_grid:
-                g_spatial_grid = SpatialGrid(g_screen_width, g_screen_height,
-                                            cell_size=int(80 * g_scale_factor))
+                g_spatial_grid = SpatialGrid(
+                    g_screen_width, g_screen_height, cell_size=int(80 * g_scale_factor)
+                )
 
             create_vignette()
         except (pygame.error, MemoryError) as e:
@@ -2575,6 +2572,7 @@ def create_thruster_particles() -> None:
     Globals:
         Reads g_ship, writes to g_particle_pool
     """
+    global g_ship
     sin_a, cos_a = get_sin_cos(g_ship.angle)
     base_x = g_ship.x - scaled(Cfg.ship_nose_length * 0.8) * cos_a
     base_y = g_ship.y - scaled(Cfg.ship_nose_length * 0.8) * sin_a
@@ -2616,6 +2614,7 @@ def create_respawn_particles() -> None:
     Globals:
         Reads g_ship, writes to g_particle_pool
     """
+    global g_ship
     # Inward spiral particles
     for _ in range(Cfg.particle_respawn_rate):
         angle = random.uniform(0, 360)
@@ -2688,6 +2687,7 @@ def shoot_bullet(
     Globals:
         Reads g_ship, writes to g_bullets, g_enemy_bullets, g_game_state, g_particle_pool
     """
+    global g_ship
     if is_enemy:
         play_sound("enemy_shoot", enemy_x, 0.7)
         sin_a, cos_a = get_sin_cos(enemy_angle)
@@ -3163,30 +3163,32 @@ def handle_bullet_collisions() -> None:
 
         # Get only nearby objects instead of checking all
         nearby_objects = g_spatial_grid.get_nearby_objects(
-            bullet, scaled(Cfg.bullet_radius))
+            bullet, scaled(Cfg.bullet_radius)
+        )
 
         for obj, obj_radius in nearby_objects:
             # Handle asteroid collision
             if isinstance(obj, Asteroid):
                 margin = scaled(Cfg.asteroid_collision_margin)
-                if check_collision(bullet, obj, scaled(Cfg.bullet_radius),
-                                 obj_radius + margin):
+                if check_collision(
+                    bullet, obj, scaled(Cfg.bullet_radius), obj_radius + margin
+                ):
                     bullets_to_remove.add(i)
 
                     # Find asteroid index for compatibility
                     try:
                         j = g_asteroids.index(obj)
                         if j not in asteroids_to_remove:
-                            handle_asteroid_hit(obj, j, asteroids_to_remove,
-                                              asteroids_to_add)
+                            handle_asteroid_hit(
+                                obj, j, asteroids_to_remove, asteroids_to_add
+                            )
                     except ValueError:
                         pass  # Asteroid was already removed
                     break
 
             # Handle enemy collision
             elif isinstance(obj, Enemy):
-                if check_collision(bullet, obj, scaled(Cfg.bullet_radius),
-                                 obj_radius):
+                if check_collision(bullet, obj, scaled(Cfg.bullet_radius), obj_radius):
                     bullets_to_remove.add(i)
 
                     try:
@@ -3226,13 +3228,13 @@ def handle_ship_asteroid_collisions() -> None:
         Reads g_ship, g_asteroids, uses g_spatial_grid
     """
     margin = scaled(Cfg.asteroid_collision_margin)
-    nearby_objects = g_spatial_grid.get_nearby_objects(
-        g_ship, scaled(Cfg.ship_radius))
+    nearby_objects = g_spatial_grid.get_nearby_objects(g_ship, scaled(Cfg.ship_radius))
 
     for obj, obj_radius in nearby_objects:
         if isinstance(obj, Asteroid):
-            if check_collision(g_ship, obj, scaled(Cfg.ship_radius),
-                             obj_radius + margin):
+            if check_collision(
+                g_ship, obj, scaled(Cfg.ship_radius), obj_radius + margin
+            ):
                 if handle_ship_damage():
                     break
 
@@ -3249,8 +3251,7 @@ def handle_ship_enemy_collisions() -> None:
     global g_enemies
     enemies_to_remove = []
 
-    nearby_objects = g_spatial_grid.get_nearby_objects(
-        g_ship, scaled(Cfg.ship_radius))
+    nearby_objects = g_spatial_grid.get_nearby_objects(g_ship, scaled(Cfg.ship_radius))
 
     for obj, obj_radius in nearby_objects:
         if isinstance(obj, Enemy):
@@ -3258,7 +3259,9 @@ def handle_ship_enemy_collisions() -> None:
                 try:
                     i = g_enemies.index(obj)
                     enemies_to_remove.append(i)
-                    create_explosion(obj.x, obj.y, 20, Cfg.colors["enemy"], is_enemy=True)
+                    create_explosion(
+                        obj.x, obj.y, 20, Cfg.colors["enemy"], is_enemy=True
+                    )
                     if handle_ship_damage():
                         break
                 except ValueError:
@@ -3318,7 +3321,7 @@ def handle_asteroid_hit(
 
         if asteroid.health <= 0:
             to_remove.add(index)
-            g_game_state['grid_dirty'] = True  # Boss removed
+            g_game_state["grid_dirty"] = True  # Boss removed
             create_explosion(asteroid.x, asteroid.y, 60, Cfg.colors["boss"])
             g_game_state["score"] += Cfg.boss_score
             add_combo()
@@ -3340,7 +3343,7 @@ def handle_asteroid_hit(
             asteroid.hit_flash = Cfg.asteroid_hit_flash_duration
         else:
             to_remove.add(index)
-            g_game_state['grid_dirty'] = True  # Asteroid removed
+            g_game_state["grid_dirty"] = True  # Asteroid removed
 
         explosion_color, particle_count = Cfg.explosion_config[asteroid.size]
 
@@ -3369,14 +3372,14 @@ def handle_asteroid_hit(
                 )
                 to_add.append(new_asteroid)
             to_remove.add(index)
-            g_game_state['grid_dirty'] = True  # Objects added/removed
+            g_game_state["grid_dirty"] = True  # Objects added/removed
 
         if (
             random.random() < Cfg.enemy_spawn_chance
             and len(g_enemies) < Cfg.enemy_max_count
         ):
             g_enemies.append(create_enemy())
-            g_game_state['grid_dirty'] = True  # Enemy spawned
+            g_game_state["grid_dirty"] = True  # Enemy spawned
 
     check_achievement("first_blood")
 
@@ -3402,7 +3405,7 @@ def handle_enemy_hit(enemy: Enemy, index: int, to_remove: set) -> None:
 
     if enemy.health <= 0:
         to_remove.add(index)
-        g_game_state['grid_dirty'] = True  # Enemy removed
+        g_game_state["grid_dirty"] = True  # Enemy removed
         create_explosion(enemy.x, enemy.y, 25, Cfg.colors["enemy"], is_enemy=True)
         g_game_state["score"] += Cfg.enemy_score
         add_combo()
@@ -4218,7 +4221,7 @@ def start_new_level() -> None:
         g_asteroids.append(create_asteroid(has_crystals=has_crystals))
 
     g_floating_texts = []
-    g_game_state['grid_dirty'] = True  # New level objects created
+    g_game_state["grid_dirty"] = True  # New level objects created
     reset_ship()
 
     check_achievement("survivor")
@@ -4273,12 +4276,20 @@ def draw_asteroid(surface: pygame.Surface, asteroid: Asteroid) -> None:
     """
     # Get interpolated position
     x, y, angle = get_interpolated_position(asteroid)
-    
+
     # Create temporary object for get_polygon_points with interpolated values
-    temp_asteroid = type('obj', (object,), {
-        'x': x, 'y': y, 'angle': angle, 'radius': asteroid.radius, 'shape': asteroid.shape
-    })()
-    
+    temp_asteroid = type(
+        "obj",
+        (object,),
+        {
+            "x": x,
+            "y": y,
+            "angle": angle,
+            "radius": asteroid.radius,
+            "shape": asteroid.shape,
+        },
+    )()
+
     points = get_polygon_points(
         temp_asteroid, Cfg.asteroid_vertex_count, asteroid.radius, asteroid.shape
     )
@@ -4304,17 +4315,26 @@ def draw_asteroid(surface: pygame.Surface, asteroid: Asteroid) -> None:
     )
 
     # Create temporary object for flash rendering with interpolated position
-    temp_flash = type('obj', (object,), {'hit_flash': asteroid.hit_flash, 'x': x, 'y': y, 'radius': asteroid.radius})()
+    temp_flash = type(
+        "obj",
+        (object,),
+        {"hit_flash": asteroid.hit_flash, "x": x, "y": y, "radius": asteroid.radius},
+    )()
     DrawEffects.polygon_with_flash(surface, temp_flash, points, base_color)
 
     if asteroid.is_boss and asteroid.health:
         # Create temporary object with interpolated position for health bar
-        temp_health = type('obj', (object,), {
-            'x': x, 'y': y, 
-            'health': asteroid.health, 
-            'max_health': asteroid.max_health,
-            'radius': asteroid.radius
-        })()
+        temp_health = type(
+            "obj",
+            (object,),
+            {
+                "x": x,
+                "y": y,
+                "health": asteroid.health,
+                "max_health": asteroid.max_health,
+                "radius": asteroid.radius,
+            },
+        )()
         DrawEffects.health_bar(
             surface,
             temp_health,
@@ -4336,7 +4356,7 @@ def draw_enemy(surface: pygame.Surface, enemy: Enemy) -> None:
     """
     # Get interpolated position
     x, y, angle = get_interpolated_position(enemy)
-    
+
     is_finisher_target = False
     if g_game_state["finisher"]["ready"] and not g_game_state["finisher"]["executing"]:
         target = check_finisher_collision(g_ship, g_ship.angle)
@@ -4387,12 +4407,8 @@ def draw_enemy(surface: pygame.Surface, enemy: Enemy) -> None:
     if enemy.ai_type == EnemyAIType.HUNTER:
         size = 4 * g_scale_factor
         color = (200, 50, 50)
-        pygame.draw.line(
-            surface, color, (x - size, y), (x + size, y), 1
-        )
-        pygame.draw.line(
-            surface, color, (x, y - size), (x, y + size), 1
-        )
+        pygame.draw.line(surface, color, (x - size, y), (x + size, y), 1)
+        pygame.draw.line(surface, color, (x, y - size), (x, y + size), 1)
     else:
         pygame.draw.circle(
             surface,
@@ -4423,9 +4439,7 @@ def draw_enemy(surface: pygame.Surface, enemy: Enemy) -> None:
             )
 
     # Create temporary object with interpolated position for health pips
-    temp_enemy = type('obj', (object,), {
-        'x': x, 'y': y, 'health': enemy.health
-    })()
+    temp_enemy = type("obj", (object,), {"x": x, "y": y, "health": enemy.health})()
     DrawEffects.enemy_health_pips(surface, temp_enemy)
 
 
@@ -4701,7 +4715,7 @@ def draw_powerup_auras(surface: pygame.Surface) -> None:
     """
     # Get interpolated ship position
     ship_x, ship_y, _ = get_interpolated_position(g_ship)
-    
+
     if g_ship.rapid_fire > 0:
         pulse = calculate_pulse(g_ship.aura_pulse, 1.0, 0.3, 0.7)
         radius = int(35 * pulse * g_scale_factor)
@@ -4748,13 +4762,11 @@ def draw_powerups(surface: pygame.Surface) -> None:
     for powerup in g_powerups:
         # Get interpolated position
         x, y, _ = get_interpolated_position(powerup)
-        
+
         pulse = calculate_pulse(powerup.pulse, 1.0)
         color = Cfg.powerup_types[powerup.type]["color"]
 
-        DrawEffects.glow(
-            surface, (x, y), 25 * pulse * g_scale_factor, color, pulse
-        )
+        DrawEffects.glow(surface, (x, y), 25 * pulse * g_scale_factor, color, pulse)
 
         symbol_text = g_small_font.render(
             Cfg.powerup_types[powerup.type]["symbol"], True, color
@@ -4782,7 +4794,7 @@ def draw_powerups(surface: pygame.Surface) -> None:
             pygame.draw.polygon(surface, color, points, max(1, int(2 * g_scale_factor)))
         else:
             # Create temporary object for get_polygon_points with interpolated position
-            temp_powerup = type('obj', (object,), {'x': x, 'y': y})()
+            temp_powerup = type("obj", (object,), {"x": x, "y": y})()
             points = get_polygon_points(
                 temp_powerup,
                 Cfg.powerup_hexagon_vertices,
@@ -4804,7 +4816,7 @@ def draw_bullets(surface: pygame.Surface) -> None:
     for bullet in g_bullets:
         # Get interpolated position
         x, y, _ = get_interpolated_position(bullet)
-        
+
         for i, pos in enumerate(bullet.trail):
             if i > 0:
                 alpha = i / len(bullet.trail)
@@ -4814,9 +4826,7 @@ def draw_bullets(surface: pygame.Surface) -> None:
                 )
                 pygame.draw.circle(surface, color, (int(pos[0]), int(pos[1])), radius)
 
-        DrawEffects.glow(
-            surface, (x, y), scaled(Cfg.bullet_radius * 4), (255, 255, 0)
-        )
+        DrawEffects.glow(surface, (x, y), scaled(Cfg.bullet_radius * 4), (255, 255, 0))
         pygame.draw.circle(
             surface,
             Cfg.colors["bullet"],
@@ -4827,7 +4837,7 @@ def draw_bullets(surface: pygame.Surface) -> None:
     for bullet in g_enemy_bullets:
         # Get interpolated position
         x, y, _ = get_interpolated_position(bullet)
-        
+
         for i, pos in enumerate(bullet.trail):
             if i > 0:
                 alpha = i / len(bullet.trail)
@@ -6787,9 +6797,7 @@ def init_sounds() -> None:
 
         enemy_sweep = generate_sound(0.12, (600, 100), "sweep")
         enemy_sound = apply_envelope(enemy_sweep, "exp", 8)
-        sound = numpy_to_pygame_sound(
-            enemy_sound * 0.7 * Cfg.sound_master_volume
-        )
+        sound = numpy_to_pygame_sound(enemy_sound * 0.7 * Cfg.sound_master_volume)
         if sound is not None:
             g_sounds["enemy_shoot"] = sound
 
@@ -6813,7 +6821,7 @@ def init_sounds() -> None:
             if start + duration <= len(crystal_sound):
                 tone = generate_sound(0.15, freq, "sine")
                 tone = apply_envelope(tone, "exp", 3)
-                crystal_sound[start : start + len(tone)] += tone * 0.4
+                crystal_sound[start: start + len(tone)] += tone * 0.4
 
         sound = numpy_to_pygame_sound(
             crystal_sound * Cfg.powerup_volume * Cfg.sound_master_volume
@@ -6846,7 +6854,7 @@ def init_sounds() -> None:
             if sound is not None:
                 g_sounds[f"powerup_{ptype}"] = sound
 
-        thrust_base = generate_sound(1.0, 60, "sine")
+        # thrust_base = generate_sound(1.0, 60, "sine")  # Unused
         thrust_wobble = generate_sound(1.0, 5, "sine") * 10
         thrust_freq = 60 + thrust_wobble
         thrust_frames = int(1.0 * sample_rate)
@@ -6870,9 +6878,7 @@ def init_sounds() -> None:
                 end = min(start + len(tone), len(transition_sound))
                 transition_sound[start:end] += tone[: end - start] * 0.4
 
-        sound = numpy_to_pygame_sound(
-            transition_sound * Cfg.sound_master_volume
-        )
+        sound = numpy_to_pygame_sound(transition_sound * Cfg.sound_master_volume)
         if sound is not None:
             g_sounds["level_transition"] = sound
 
@@ -6962,12 +6968,13 @@ def store_previous_positions() -> None:
     Side effects:
         Adds prev_x, prev_y, prev_angle attributes to entities
     """
+    global g_ship
     # Ship
-    if hasattr(g_ship, 'x'):
+    if hasattr(g_ship, "x"):
         g_ship.prev_x = g_ship.x
         g_ship.prev_y = g_ship.y
         g_ship.prev_angle = g_ship.angle
-    
+
     # Enemies
     for enemy in g_enemies:
         enemy.prev_x = enemy.x
@@ -6979,17 +6986,17 @@ def store_previous_positions() -> None:
         asteroid.prev_x = asteroid.x
         asteroid.prev_y = asteroid.y
         asteroid.prev_angle = asteroid.angle
-        
+
     # Bullets
     for bullet in g_bullets:
         bullet.prev_x = bullet.x
         bullet.prev_y = bullet.y
-        
+
     # Enemy bullets
     for bullet in g_enemy_bullets:
         bullet.prev_x = bullet.x
         bullet.prev_y = bullet.y
-        
+
     # Powerups
     for powerup in g_powerups:
         powerup.prev_x = powerup.x
@@ -7011,24 +7018,24 @@ def get_interpolated_position(obj: Any) -> Tuple[float, float, float]:
         Tuple of (interpolated_x, interpolated_y, interpolated_angle)
     """
     if not Cfg.enable_interpolation:
-        return obj.x, obj.y, getattr(obj, 'angle', 0)
+        return obj.x, obj.y, getattr(obj, "angle", 0)
 
-    alpha = g_game_state.get('render_alpha', 1.0)
+    alpha = g_game_state.get("render_alpha", 1.0)
 
-    if hasattr(obj, 'prev_x'):
+    if hasattr(obj, "prev_x"):
         x = obj.prev_x + (obj.x - obj.prev_x) * alpha
         y = obj.prev_y + (obj.y - obj.prev_y) * alpha
 
         # Handle angle wraparound for smooth rotation
-        if hasattr(obj, 'angle') and hasattr(obj, 'prev_angle'):
+        if hasattr(obj, "angle") and hasattr(obj, "prev_angle"):
             angle_diff = (obj.angle - obj.prev_angle + 180) % 360 - 180
             angle = (obj.prev_angle + angle_diff * alpha) % 360
         else:
-            angle = getattr(obj, 'angle', 0)
+            angle = getattr(obj, "angle", 0)
 
         return x, y, angle
 
-    return obj.x, obj.y, getattr(obj, 'angle', 0)
+    return obj.x, obj.y, getattr(obj, "angle", 0)
 
 
 def rebuild_spatial_grid() -> None:
@@ -7055,7 +7062,10 @@ def update_particle_attraction(particle: Particle, dt: float) -> None:
         particle: Particle to update
         dt: Delta time for frame-rate independent updates
     """
-    if particle.type != ParticleType.STREAK or particle.life <= Cfg.particle_streak_min_life:
+    if (
+        particle.type != ParticleType.STREAK
+        or particle.life <= Cfg.particle_streak_min_life
+    ):
         return
 
     # Manhattan distance for quick reject
@@ -7068,7 +7078,7 @@ def update_particle_attraction(particle: Particle, dt: float) -> None:
     dy = g_ship.y - particle.y
     dist_sq = dx * dx + dy * dy
 
-    if dist_sq < Cfg.particle_streak_attraction_distance ** 2:
+    if dist_sq < Cfg.particle_streak_attraction_distance**2:
         dist = math.sqrt(dist_sq)
         attraction = Cfg.particle_streak_attraction_force * dt * 30  # Scale by dt
         particle.vx += (dx / dist) * attraction
@@ -7083,17 +7093,17 @@ def update_physics_only(dt: float) -> None:
     """
     # Asteroids - simple physics
     for asteroid in g_asteroids:
-        asteroid.x += asteroid.vx * g_game_state['time_scale']
-        asteroid.y += asteroid.vy * g_game_state['time_scale']
-        asteroid.angle += asteroid.spin * g_game_state['time_scale']
+        asteroid.x += asteroid.vx * g_game_state["time_scale"]
+        asteroid.y += asteroid.vy * g_game_state["time_scale"]
+        asteroid.angle += asteroid.spin * g_game_state["time_scale"]
         wrap_position(asteroid)
         if asteroid.hit_flash > 0:
             asteroid.hit_flash -= dt * 60  # Convert to frame-based
 
     # Enemies - movement only, no AI decisions
     for enemy in g_enemies:
-        enemy.x += enemy.vx * g_game_state['time_scale']
-        enemy.y += enemy.vy * g_game_state['time_scale']
+        enemy.x += enemy.vx * g_game_state["time_scale"]
+        enemy.y += enemy.vy * g_game_state["time_scale"]
         wrap_position(enemy)
         enemy.fire_cooldown -= dt * 60
         if enemy.hit_flash > 0:
@@ -7106,8 +7116,8 @@ def update_physics_only(dt: float) -> None:
     # Powerups
     global g_powerups
     for powerup in g_powerups:
-        powerup.x += powerup.vx * g_game_state['time_scale']
-        powerup.y += powerup.vy * g_game_state['time_scale']
+        powerup.x += powerup.vx * g_game_state["time_scale"]
+        powerup.y += powerup.vy * g_game_state["time_scale"]
         wrap_position(powerup)
         powerup.lifetime -= dt * 60
     g_powerups = [p for p in g_powerups if p.lifetime > 0]
@@ -7147,7 +7157,7 @@ def update_ui_systems(dt: float) -> None:
     for text in g_floating_texts:
         text.y += text.vy * dt * 20  # Scale for 20Hz
         text.life -= dt * 20
-        text.vy *= (0.95 ** (dt * 20))  # Adjust friction
+        text.vy *= 0.95 ** (dt * 20)  # Adjust friction
 
     # Remove dead texts
     g_floating_texts = [t for t in g_floating_texts if t.life > 0]
@@ -7163,7 +7173,9 @@ def update_visual_effects_complex(dt: float) -> None:
         dt: Delta time for effects updates
     """
     # Update aura rotation
-    g_game_state["effects"]["aura_rotation"] += dt * 60 * Cfg.powerup_aura_rotation_speed
+    g_game_state["effects"]["aura_rotation"] += (
+        dt * 60 * Cfg.powerup_aura_rotation_speed
+    )
     g_game_state["effects"]["aura_rotation"] %= 360
 
 
@@ -7173,53 +7185,55 @@ def update_decoupled_systems(dt: float) -> None:
     Args:
         dt: Delta time for decoupled updates
     """
-    timers = g_game_state['update_timers']
+    timers = g_game_state["update_timers"]
 
     # Spatial grid rebuild at 30Hz - always rebuild for moving objects
-    timers['grid_rebuild'] += dt
-    while timers['grid_rebuild'] >= Cfg.update_intervals['grid_rebuild']:
+    timers["grid_rebuild"] += dt
+    while timers["grid_rebuild"] >= Cfg.update_intervals["grid_rebuild"]:
         rebuild_spatial_grid()  # Always rebuild to handle moving objects
-        timers['grid_rebuild'] -= Cfg.update_intervals['grid_rebuild']
+        timers["grid_rebuild"] -= Cfg.update_intervals["grid_rebuild"]
 
     # AI at 15Hz
-    timers['ai'] += dt
-    while timers['ai'] >= Cfg.update_intervals['ai']:
-        update_ai_systems(Cfg.update_intervals['ai'])
-        timers['ai'] -= Cfg.update_intervals['ai']
+    timers["ai"] += dt
+    while timers["ai"] >= Cfg.update_intervals["ai"]:
+        update_ai_systems(Cfg.update_intervals["ai"])
+        timers["ai"] -= Cfg.update_intervals["ai"]
 
     # Particles at 30Hz
-    timers['particles'] += dt
-    while timers['particles'] >= Cfg.update_intervals['particles']:
-        update_complex_particles(Cfg.update_intervals['particles'])
-        timers['particles'] -= Cfg.update_intervals['particles']
+    timers["particles"] += dt
+    while timers["particles"] >= Cfg.update_intervals["particles"]:
+        update_complex_particles(Cfg.update_intervals["particles"])
+        timers["particles"] -= Cfg.update_intervals["particles"]
 
     # UI at 20Hz
-    timers['ui'] += dt
-    while timers['ui'] >= Cfg.update_intervals['ui']:
-        update_ui_systems(Cfg.update_intervals['ui'])
-        timers['ui'] -= Cfg.update_intervals['ui']
+    timers["ui"] += dt
+    while timers["ui"] >= Cfg.update_intervals["ui"]:
+        update_ui_systems(Cfg.update_intervals["ui"])
+        timers["ui"] -= Cfg.update_intervals["ui"]
 
     # Visual effects at 20Hz
-    timers['effects'] += dt
-    while timers['effects'] >= Cfg.update_intervals['effects']:
-        update_visual_effects_complex(Cfg.update_intervals['effects'])
-        timers['effects'] -= Cfg.update_intervals['effects']
+    timers["effects"] += dt
+    while timers["effects"] >= Cfg.update_intervals["effects"]:
+        update_visual_effects_complex(Cfg.update_intervals["effects"])
+        timers["effects"] -= Cfg.update_intervals["effects"]
 
 
 def handle_level_completion() -> None:
     """Check for level completion and trigger transitions."""
-    if not g_asteroids and g_game_state['effects']['level_transition'] == 0:
-        g_game_state['level'] += 1
-        g_game_state['effects']['level_transition'] = Cfg.level_transition_duration
-        g_game_state['effects']['level_transition_text'] = f"LEVEL {g_game_state['level']}"
-        g_game_state['effects']['screen_shake'] = 10
-        play_sound('level_transition', g_screen_width // 2)
+    if not g_asteroids and g_game_state["effects"]["level_transition"] == 0:
+        g_game_state["level"] += 1
+        g_game_state["effects"]["level_transition"] = Cfg.level_transition_duration
+        g_game_state["effects"][
+            "level_transition_text"
+        ] = f"LEVEL {g_game_state['level']}"
+        g_game_state["effects"]["screen_shake"] = 10
+        play_sound("level_transition", g_screen_width // 2)
 
-    if g_game_state['effects']['level_transition'] > 0:
-        g_game_state['effects']['level_transition'] = update_timer(
-            g_game_state['effects']['level_transition']
+    if g_game_state["effects"]["level_transition"] > 0:
+        g_game_state["effects"]["level_transition"] = update_timer(
+            g_game_state["effects"]["level_transition"]
         )
-        if g_game_state['effects']['level_transition'] == 0:
+        if g_game_state["effects"]["level_transition"] == 0:
             start_new_level()
 
 
@@ -7242,14 +7256,14 @@ def update_game_state(keys: dict, controller_input: Dict[str, Any]) -> None:
     frame_start_time = pygame.time.get_ticks() / 1000.0
 
     # Calculate frame time with capping
-    if 'last_frame_time' not in g_game_state:
-        g_game_state['last_frame_time'] = frame_start_time
+    if "last_frame_time" not in g_game_state:
+        g_game_state["last_frame_time"] = frame_start_time
 
-    dt = min(frame_start_time - g_game_state['last_frame_time'], 0.05)  # Cap at 50ms
-    g_game_state['last_frame_time'] = frame_start_time
+    dt = min(frame_start_time - g_game_state["last_frame_time"], 0.05)  # Cap at 50ms
+    g_game_state["last_frame_time"] = frame_start_time
 
     # Accumulate physics time
-    g_game_state['physics_accumulator'] += dt
+    g_game_state["physics_accumulator"] += dt
 
     # Store previous positions for interpolation before physics updates
     if Cfg.enable_interpolation:
@@ -7257,7 +7271,7 @@ def update_game_state(keys: dict, controller_input: Dict[str, Any]) -> None:
 
     # Fixed physics timestep loop - CRITICAL systems remain at 60Hz
     physics_updates = 0
-    while g_game_state['physics_accumulator'] >= Cfg.PHYSICS_DT and physics_updates < 4:
+    while g_game_state["physics_accumulator"] >= Cfg.PHYSICS_DT and physics_updates < 4:
         # === 60Hz CRITICAL SYSTEMS ===
 
         # Ship controls - must be responsive
@@ -7279,11 +7293,11 @@ def update_game_state(keys: dict, controller_input: Dict[str, Any]) -> None:
         update_ship_timers()
 
         # Subtract physics timestep
-        g_game_state['physics_accumulator'] -= Cfg.PHYSICS_DT
+        g_game_state["physics_accumulator"] -= Cfg.PHYSICS_DT
         physics_updates += 1
 
     # Calculate render interpolation alpha
-    g_game_state['render_alpha'] = g_game_state['physics_accumulator'] / Cfg.PHYSICS_DT
+    g_game_state["render_alpha"] = g_game_state["physics_accumulator"] / Cfg.PHYSICS_DT
 
     # === DECOUPLED SYSTEMS (Variable frequency) ===
     update_decoupled_systems(dt)
@@ -7304,7 +7318,7 @@ def update_game_state(keys: dict, controller_input: Dict[str, Any]) -> None:
     update_finisher_meter()
 
     # Performance debug info
-    if Cfg.show_update_rates and g_game_state['frame_count'] % 60 == 0:
+    if Cfg.show_update_rates and g_game_state["frame_count"] % 60 == 0:
         print(f"Physics updates: {physics_updates}, Frame time: {dt*1000:.1f}ms")
 
 
@@ -7456,15 +7470,23 @@ def handle_game_keys(event: pygame.event.Event) -> None:
         Cfg.enable_interpolation = not Cfg.enable_interpolation
         status = "ON" if Cfg.enable_interpolation else "OFF"
         print(f"[DEBUG] Interpolation: {status}")
-        create_floating_text(g_screen_width // 2, g_screen_height // 2,
-                           f"Interpolation: {status}", Cfg.colors["white"])
+        create_floating_text(
+            g_screen_width // 2,
+            g_screen_height // 2,
+            f"Interpolation: {status}",
+            Cfg.colors["white"],
+        )
     elif event.key == pygame.K_F2:
         # Toggle performance debug info
         Cfg.show_update_rates = not Cfg.show_update_rates
         status = "ON" if Cfg.show_update_rates else "OFF"
         print(f"[DEBUG] Performance Display: {status}")
-        create_floating_text(g_screen_width // 2, g_screen_height // 2 + 30,
-                           f"Performance Debug: {status}", Cfg.colors["white"])
+        create_floating_text(
+            g_screen_width // 2,
+            g_screen_height // 2 + 30,
+            f"Performance Debug: {status}",
+            Cfg.colors["white"],
+        )
 
 
 def toggle_pause() -> None:
@@ -7647,8 +7669,9 @@ def main() -> None:
 
     # Initialize spatial grid for collision detection
     global g_spatial_grid
-    g_spatial_grid = SpatialGrid(g_screen_width, g_screen_height,
-                                cell_size=int(80 * g_scale_factor))
+    g_spatial_grid = SpatialGrid(
+        g_screen_width, g_screen_height, cell_size=int(80 * g_scale_factor)
+    )
 
     create_starfield()
     create_vignette()
