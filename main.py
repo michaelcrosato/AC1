@@ -3893,22 +3893,15 @@ def update_enemy_ai(enemy: Enemy) -> None:
 
     if enemy.ai_type == EnemyAIType.HUNTER:
         # Hunter AI: approach or retreat based on distance
+        target_speed = scaled(Cfg.enemy_speed) * g_game_state["time_scale"]
         if distance > min_distance:
-            rate = (
-                ai_config["approach_rate"]
-                * scaled(Cfg.enemy_speed)
-                * g_game_state["time_scale"]
-            )
-            enemy.vx += dx * rate
-            enemy.vy += dy * rate
+            # Approach player - set velocity toward target at full speed
+            enemy.vx = dx * target_speed
+            enemy.vy = dy * target_speed
         else:
-            rate = (
-                ai_config["retreat_rate"]
-                * scaled(Cfg.enemy_speed)
-                * g_game_state["time_scale"]
-            )
-            enemy.vx -= dx * rate
-            enemy.vy -= dy * rate
+            # Retreat from player - set velocity away from target at full speed
+            enemy.vx = -dx * target_speed
+            enemy.vy = -dy * target_speed
     else:  # Circler
         # Circler AI: orbit around player
         enemy.orbit_angle += ai_config["orbit_speed"] * g_game_state["time_scale"]
@@ -3924,13 +3917,10 @@ def update_enemy_ai(enemy: Enemy) -> None:
 
         # Same protection for orbit calculations
         if dist > MIN_SAFE_DISTANCE:
-            rate = (
-                ai_config["approach_rate"]
-                * scaled(Cfg.enemy_speed)
-                * g_game_state["time_scale"]
-            )
-            enemy.vx += (dx_target / dist) * rate
-            enemy.vy += (dy_target / dist) * rate
+            target_speed = scaled(Cfg.enemy_speed) * g_game_state["time_scale"]
+            # Set velocity toward orbit target at full speed
+            enemy.vx = (dx_target / dist) * target_speed
+            enemy.vy = (dy_target / dist) * target_speed
 
     enemy.angle = math.degrees(math.atan2(dy, dx))
 
@@ -4815,13 +4805,14 @@ def draw_powerups(surface: pygame.Surface) -> None:
         if powerup.type == PowerUpType.CRYSTAL:
             points = []
             angle = powerup.pulse * 50
+            crystal_radius = scaled(Cfg.powerup_visual_radius) * 0.5  # Half size for crystals
             for i in range(4):
                 point_angle = angle + i * 90
                 sin_a, cos_a = get_sin_cos(point_angle)
                 points.append(
                     (
-                        x + scaled(Cfg.powerup_visual_radius) * cos_a,
-                        y + scaled(Cfg.powerup_visual_radius) * sin_a,
+                        x + crystal_radius * cos_a,
+                        y + crystal_radius * sin_a,
                     )
                 )
             pygame.draw.polygon(surface, color, points, max(1, int(2 * g_scale_factor)))
