@@ -1864,6 +1864,12 @@ def init_ship_state() -> ShipState:
     """
     global g_ship
     g_ship = ShipState(x=g_screen_width // 2, y=g_screen_height // 2)
+    
+    # Initialize prev_ attributes for smooth interpolation
+    g_ship.prev_x = g_ship.x
+    g_ship.prev_y = g_ship.y
+    g_ship.prev_angle = g_ship.angle
+    
     return g_ship
 
 
@@ -2144,6 +2150,11 @@ def create_asteroid(
         max_health=Cfg.boss_health if is_boss else 1,
     )
 
+    # Initialize prev_ attributes for smooth interpolation
+    asteroid.prev_x = x
+    asteroid.prev_y = y
+    asteroid.prev_angle = asteroid.angle
+
     return asteroid
 
 
@@ -2189,7 +2200,7 @@ def create_enemy(x: Optional[float] = None, y: Optional[float] = None) -> Enemy:
         if y is None:
             y = float(g_screen_height - margin)
 
-    return Enemy(
+    enemy = Enemy(
         x=x,
         y=y,
         angle=random.uniform(0, 360),
@@ -2201,6 +2212,13 @@ def create_enemy(x: Optional[float] = None, y: Optional[float] = None) -> Enemy:
         orbit_angle=random.uniform(0, 360),
         radius=scaled(Cfg.enemy_radius),
     )
+
+    # Initialize prev_ attributes for smooth interpolation
+    enemy.prev_x = x
+    enemy.prev_y = y
+    enemy.prev_angle = enemy.angle
+
+    return enemy
 
 
 def create_powerup(
@@ -2246,16 +2264,20 @@ def create_powerup(
         * (1 + (area_multiplier - 1) * Cfg.powerup_area_scaling_factor)
     )
 
-    g_powerups.append(
-        PowerUp(
-            x=x,
-            y=y,
-            vx=random.uniform(-1, 1) * g_scale_factor,
-            vy=random.uniform(-1, 1) * g_scale_factor,
-            type=powerup_type,
-            lifetime=lifetime,
-        )
+    powerup = PowerUp(
+        x=x,
+        y=y,
+        vx=random.uniform(-1, 1) * g_scale_factor,
+        vy=random.uniform(-1, 1) * g_scale_factor,
+        type=powerup_type,
+        lifetime=lifetime,
     )
+
+    # Initialize prev_ attributes for smooth interpolation
+    powerup.prev_x = x
+    powerup.prev_y = y
+
+    g_powerups.append(powerup)
 
 
 # === [PARTICLE EFFECTS] ===
@@ -2670,15 +2692,19 @@ def shoot_bullet(
         play_sound("enemy_shoot", enemy_x, 0.7)
         sin_a, cos_a = get_sin_cos(enemy_angle)
 
-        g_enemy_bullets.append(
-            Bullet(
-                x=enemy_x + scaled(Cfg.ship_nose_length) * cos_a,
-                y=enemy_y + scaled(Cfg.ship_nose_length) * sin_a,
-                vx=cos_a * scaled(Cfg.bullet_speed) * Cfg.enemy_bullet_speed_mult,
-                vy=sin_a * scaled(Cfg.bullet_speed) * Cfg.enemy_bullet_speed_mult,
-                life=Cfg.bullet_lifetime,
-            )
+        bullet_x = enemy_x + scaled(Cfg.ship_nose_length) * cos_a
+        bullet_y = enemy_y + scaled(Cfg.ship_nose_length) * sin_a
+        bullet = Bullet(
+            x=bullet_x,
+            y=bullet_y,
+            vx=cos_a * scaled(Cfg.bullet_speed) * Cfg.enemy_bullet_speed_mult,
+            vy=sin_a * scaled(Cfg.bullet_speed) * Cfg.enemy_bullet_speed_mult,
+            life=Cfg.bullet_lifetime,
         )
+        # Initialize prev_ attributes for smooth interpolation
+        bullet.prev_x = bullet_x
+        bullet.prev_y = bullet_y
+        g_enemy_bullets.append(bullet)
     else:
         play_sound("shoot", g_ship.x, 1.0)
 
@@ -2712,26 +2738,34 @@ def shoot_bullet(
                 angle = g_ship.angle + angle_offset
                 sin_a, cos_a = get_sin_cos(angle)
 
-                g_bullets.append(
-                    Bullet(
-                        x=g_ship.x + scaled(Cfg.ship_nose_length) * cos_a,
-                        y=g_ship.y + scaled(Cfg.ship_nose_length) * sin_a,
-                        vx=cos_a * scaled(Cfg.bullet_speed),
-                        vy=sin_a * scaled(Cfg.bullet_speed),
-                        life=Cfg.bullet_lifetime,
-                    )
-                )
-        else:
-            sin_a, cos_a = get_sin_cos(g_ship.angle)
-            g_bullets.append(
-                Bullet(
-                    x=g_ship.x + scaled(Cfg.ship_nose_length) * cos_a,
-                    y=g_ship.y + scaled(Cfg.ship_nose_length) * sin_a,
+                bullet_x = g_ship.x + scaled(Cfg.ship_nose_length) * cos_a
+                bullet_y = g_ship.y + scaled(Cfg.ship_nose_length) * sin_a
+                bullet = Bullet(
+                    x=bullet_x,
+                    y=bullet_y,
                     vx=cos_a * scaled(Cfg.bullet_speed),
                     vy=sin_a * scaled(Cfg.bullet_speed),
                     life=Cfg.bullet_lifetime,
                 )
+                # Initialize prev_ attributes for smooth interpolation
+                bullet.prev_x = bullet_x
+                bullet.prev_y = bullet_y
+                g_bullets.append(bullet)
+        else:
+            sin_a, cos_a = get_sin_cos(g_ship.angle)
+            bullet_x = g_ship.x + scaled(Cfg.ship_nose_length) * cos_a
+            bullet_y = g_ship.y + scaled(Cfg.ship_nose_length) * sin_a
+            bullet = Bullet(
+                x=bullet_x,
+                y=bullet_y,
+                vx=cos_a * scaled(Cfg.bullet_speed),
+                vy=sin_a * scaled(Cfg.bullet_speed),
+                life=Cfg.bullet_lifetime,
             )
+            # Initialize prev_ attributes for smooth interpolation
+            bullet.prev_x = bullet_x
+            bullet.prev_y = bullet_y
+            g_bullets.append(bullet)
 
         fire_rate_mult = get_fire_rate_multiplier()
         base_rate = (
@@ -3046,18 +3080,18 @@ def apply_shockwave_damage(x: float, y: float, radius: float) -> None:
             enemy.health -= damage
             enemy.hit_flash = Cfg.asteroid_hit_flash_duration
 
-            # Apply knockback force with division by zero protection
+            # Apply knockback force with robust division by zero protection
             dx = enemy.x - x
             dy = enemy.y - y
-            if dist > 0.1:  # Minimum distance threshold to prevent division by zero
+            MIN_SAFE_DISTANCE = 1.0  # Pixels - prevents near-zero division
+            if dist > MIN_SAFE_DISTANCE:
                 knockback_force = (
                     (1 - dist / radius) * Cfg.finisher_knockback_force * g_scale_factor
                 )
                 enemy.vx += (dx / dist) * knockback_force
                 enemy.vy += (dy / dist) * knockback_force
             else:
-                # Handle zero/near-zero distance case with random direction
-                import random
+                # Apply knockback in random direction for overlapping objects
                 angle = random.uniform(0, 2 * math.pi)
                 knockback_force = Cfg.finisher_knockback_force * g_scale_factor
                 enemy.vx += math.cos(angle) * knockback_force
@@ -3798,12 +3832,13 @@ def update_enemy_ai(enemy: Enemy) -> None:
     dy = g_ship.y - enemy.y
     distance = math.sqrt(dx * dx + dy * dy)
 
-    # Prevent division by zero with minimum distance threshold
-    if distance > 0.1:
+    # Prevent division by zero with robust minimum distance threshold
+    MIN_SAFE_DISTANCE = 1.0  # Pixels - prevents near-zero division
+    if distance > MIN_SAFE_DISTANCE:
         dx /= distance
         dy /= distance
     else:
-        # Handle zero/near-zero distance case - maintain current direction or use default
+        # Handle zero/near-zero distance case - use default direction
         dx, dy = 1.0, 0.0  # Default direction pointing right
 
     min_distance = Cfg.enemy_min_distance * g_scale_factor
@@ -3840,8 +3875,8 @@ def update_enemy_ai(enemy: Enemy) -> None:
         dy_target = target_y - enemy.y
         dist = math.sqrt(dx_target * dx_target + dy_target * dy_target)
 
-        # Prevent division by zero with minimum distance threshold
-        if dist > 0.1:
+        # Prevent division by zero with robust minimum distance threshold
+        if dist > MIN_SAFE_DISTANCE:
             rate = (
                 ai_config["approach_rate"]
                 * scaled(Cfg.enemy_speed)
@@ -4230,14 +4265,22 @@ def get_polygon_points(
 
 
 def draw_asteroid(surface: pygame.Surface, asteroid: Asteroid) -> None:
-    """Draw an asteroid entity.
+    """Draw an asteroid entity with interpolation.
 
     Args:
         surface: Surface to draw on
         asteroid: Asteroid to draw
     """
+    # Get interpolated position
+    x, y, angle = get_interpolated_position(asteroid)
+    
+    # Create temporary object for get_polygon_points with interpolated values
+    temp_asteroid = type('obj', (object,), {
+        'x': x, 'y': y, 'angle': angle, 'radius': asteroid.radius, 'shape': asteroid.shape
+    })()
+    
     points = get_polygon_points(
-        asteroid, Cfg.asteroid_vertex_count, asteroid.radius, asteroid.shape
+        temp_asteroid, Cfg.asteroid_vertex_count, asteroid.radius, asteroid.shape
     )
 
     if asteroid.is_boss:
@@ -4255,17 +4298,26 @@ def draw_asteroid(surface: pygame.Surface, asteroid: Asteroid) -> None:
 
     DrawEffects.glow(
         surface,
-        (asteroid.x, asteroid.y),
+        (x, y),  # Use interpolated position
         asteroid.size * 15 * g_scale_factor,
         glow_color,
     )
 
-    DrawEffects.polygon_with_flash(surface, asteroid, points, base_color)
+    # Create temporary object for flash rendering with interpolated position
+    temp_flash = type('obj', (object,), {'hit_flash': asteroid.hit_flash, 'x': x, 'y': y, 'radius': asteroid.radius})()
+    DrawEffects.polygon_with_flash(surface, temp_flash, points, base_color)
 
     if asteroid.is_boss and asteroid.health:
+        # Create temporary object with interpolated position for health bar
+        temp_health = type('obj', (object,), {
+            'x': x, 'y': y, 
+            'health': asteroid.health, 
+            'max_health': asteroid.max_health,
+            'radius': asteroid.radius
+        })()
         DrawEffects.health_bar(
             surface,
-            asteroid,
+            temp_health,
             Cfg.boss_health_bar_width,
             Cfg.boss_health_bar_height,
             asteroid.radius + Cfg.boss_health_bar_offset,
@@ -4273,7 +4325,7 @@ def draw_asteroid(surface: pygame.Surface, asteroid: Asteroid) -> None:
 
 
 def draw_enemy(surface: pygame.Surface, enemy: Enemy) -> None:
-    """Draw an enemy entity.
+    """Draw an enemy entity with interpolation.
 
     Args:
         surface: Surface to draw on
@@ -4282,6 +4334,9 @@ def draw_enemy(surface: pygame.Surface, enemy: Enemy) -> None:
     Globals:
         Reads g_game_state, g_ship
     """
+    # Get interpolated position
+    x, y, angle = get_interpolated_position(enemy)
+    
     is_finisher_target = False
     if g_game_state["finisher"]["ready"] and not g_game_state["finisher"]["executing"]:
         target = check_finisher_collision(g_ship, g_ship.angle)
@@ -4291,7 +4346,7 @@ def draw_enemy(surface: pygame.Surface, enemy: Enemy) -> None:
         pulse = calculate_pulse(g_game_state["frame_count"], 0.1, 0.3, 0.7)
         DrawEffects.glow(
             surface,
-            (enemy.x, enemy.y),
+            (x, y),  # Use interpolated position
             25 * pulse * g_scale_factor,
             Cfg.colors["gold"],
             pulse,
@@ -4299,24 +4354,24 @@ def draw_enemy(surface: pygame.Surface, enemy: Enemy) -> None:
     else:
         DrawEffects.glow(
             surface,
-            (enemy.x, enemy.y),
+            (x, y),  # Use interpolated position
             enemy.radius * 1.2 * g_scale_factor,
             Cfg.colors["enemy"],
             0.8,
         )
 
-    sin_a, cos_a = get_sin_cos(enemy.angle)
+    sin_a, cos_a = get_sin_cos(angle)  # Use interpolated angle
 
     points = [
-        (enemy.x + 15 * g_scale_factor * cos_a, enemy.y + 15 * g_scale_factor * sin_a),
+        (x + 15 * g_scale_factor * cos_a, y + 15 * g_scale_factor * sin_a),
         (
-            enemy.x + 10 * g_scale_factor * cos_a * 0.7 - 10 * g_scale_factor * sin_a,
-            enemy.y + 10 * g_scale_factor * sin_a * 0.7 + 10 * g_scale_factor * cos_a,
+            x + 10 * g_scale_factor * cos_a * 0.7 - 10 * g_scale_factor * sin_a,
+            y + 10 * g_scale_factor * sin_a * 0.7 + 10 * g_scale_factor * cos_a,
         ),
-        (enemy.x - 10 * g_scale_factor * cos_a, enemy.y - 10 * g_scale_factor * sin_a),
+        (x - 10 * g_scale_factor * cos_a, y - 10 * g_scale_factor * sin_a),
         (
-            enemy.x + 10 * g_scale_factor * cos_a * 0.7 + 10 * g_scale_factor * sin_a,
-            enemy.y + 10 * g_scale_factor * sin_a * 0.7 - 10 * g_scale_factor * cos_a,
+            x + 10 * g_scale_factor * cos_a * 0.7 + 10 * g_scale_factor * sin_a,
+            y + 10 * g_scale_factor * sin_a * 0.7 - 10 * g_scale_factor * cos_a,
         ),
     ]
 
@@ -4328,30 +4383,32 @@ def draw_enemy(surface: pygame.Surface, enemy: Enemy) -> None:
             surface, Cfg.colors["gold"], points, max(1, int(3 * g_scale_factor))
         )
 
+    # AI type indicator with interpolated position
     if enemy.ai_type == EnemyAIType.HUNTER:
         size = 4 * g_scale_factor
         color = (200, 50, 50)
         pygame.draw.line(
-            surface, color, (enemy.x - size, enemy.y), (enemy.x + size, enemy.y), 1
+            surface, color, (x - size, y), (x + size, y), 1
         )
         pygame.draw.line(
-            surface, color, (enemy.x, enemy.y - size), (enemy.x, enemy.y + size), 1
+            surface, color, (x, y - size), (x, y + size), 1
         )
     else:
         pygame.draw.circle(
             surface,
             (200, 50, 50),
-            (int(enemy.x), int(enemy.y)),
+            (int(x), int(y)),
             int(3 * g_scale_factor),
             1,
         )
 
+    # Fire warning with interpolated position
     if (
         enemy.fire_cooldown < Cfg.enemy_firing_warning_frames
         and enemy.fire_cooldown > 0
     ):
-        warning_x = enemy.x + 20 * g_scale_factor * cos_a
-        warning_y = enemy.y + 20 * g_scale_factor * sin_a
+        warning_x = x + 20 * g_scale_factor * cos_a
+        warning_y = y + 20 * g_scale_factor * sin_a
         warning_intensity = (
             Cfg.enemy_firing_warning_frames - enemy.fire_cooldown
         ) / Cfg.enemy_firing_warning_frames
@@ -4365,7 +4422,11 @@ def draw_enemy(surface: pygame.Surface, enemy: Enemy) -> None:
                 warning_intensity,
             )
 
-    DrawEffects.enemy_health_pips(surface, enemy)
+    # Create temporary object with interpolated position for health pips
+    temp_enemy = type('obj', (object,), {
+        'x': x, 'y': y, 'health': enemy.health
+    })()
+    DrawEffects.enemy_health_pips(surface, temp_enemy)
 
 
 def draw_ship(
@@ -4534,7 +4595,7 @@ def draw_powerup_flash(surface: pygame.Surface) -> None:
 
 
 def draw_ship_body(surface: pygame.Surface) -> None:
-    """Draw ship body polygon.
+    """Draw ship body polygon with interpolation.
 
     Args:
         surface: Surface to draw on
@@ -4542,7 +4603,9 @@ def draw_ship_body(surface: pygame.Surface) -> None:
     Globals:
         Reads g_ship, g_game_state
     """
-    ship_points = get_ship_points(g_ship.x, g_ship.y, g_ship.angle)
+    # Get interpolated position
+    x, y, angle = get_interpolated_position(g_ship)
+    ship_points = get_ship_points(x, y, angle)
 
     if g_game_state["finisher"]["ready"]:
         pygame.draw.polygon(
@@ -4577,7 +4640,9 @@ def draw_thruster_flame(
     ):
         return
 
-    sin_a, cos_a = get_sin_cos(g_ship.angle)
+    # Get interpolated position for smooth flame rendering
+    x, y, angle = get_interpolated_position(g_ship)
+    sin_a, cos_a = get_sin_cos(angle)
 
     flame_length = scaled(Cfg.ship_back_indent) + random.randint(
         int(Cfg.flame_length_min * g_scale_factor),
@@ -4588,19 +4653,19 @@ def draw_thruster_flame(
         int(Cfg.flame_width_max * g_scale_factor),
     )
 
-    flame_tip = (g_ship.x - flame_length * cos_a, g_ship.y - flame_length * sin_a)
+    flame_tip = (x - flame_length * cos_a, y - flame_length * sin_a)
 
-    sin_flame_left, cos_flame_left = get_sin_cos(g_ship.angle + Cfg.ship_flame_angle)
-    sin_flame_right, cos_flame_right = get_sin_cos(g_ship.angle - Cfg.ship_flame_angle)
+    sin_flame_left, cos_flame_left = get_sin_cos(angle + Cfg.ship_flame_angle)
+    sin_flame_right, cos_flame_right = get_sin_cos(angle - Cfg.ship_flame_angle)
 
     flame_base_left = (
-        g_ship.x - scaled(Cfg.ship_back_indent) * cos_a + flame_width * cos_flame_left,
-        g_ship.y - scaled(Cfg.ship_back_indent) * sin_a + flame_width * sin_flame_left,
+        x - scaled(Cfg.ship_back_indent) * cos_a + flame_width * cos_flame_left,
+        y - scaled(Cfg.ship_back_indent) * sin_a + flame_width * sin_flame_left,
     )
 
     flame_base_right = (
-        g_ship.x - scaled(Cfg.ship_back_indent) * cos_a + flame_width * cos_flame_right,
-        g_ship.y - scaled(Cfg.ship_back_indent) * sin_a + flame_width * sin_flame_right,
+        x - scaled(Cfg.ship_back_indent) * cos_a + flame_width * cos_flame_right,
+        y - scaled(Cfg.ship_back_indent) * sin_a + flame_width * sin_flame_right,
     )
 
     pygame.draw.polygon(
@@ -4608,17 +4673,17 @@ def draw_thruster_flame(
     )
 
     inner_flame_tip = (
-        g_ship.x - (flame_length * 0.7) * cos_a,
-        g_ship.y - (flame_length * 0.7) * sin_a,
+        x - (flame_length * 0.7) * cos_a,
+        y - (flame_length * 0.7) * sin_a,
     )
     inner_width = flame_width * 0.6
     inner_base_left = (
-        g_ship.x - scaled(Cfg.ship_back_indent) * cos_a + inner_width * cos_flame_left,
-        g_ship.y - scaled(Cfg.ship_back_indent) * sin_a + inner_width * sin_flame_left,
+        x - scaled(Cfg.ship_back_indent) * cos_a + inner_width * cos_flame_left,
+        y - scaled(Cfg.ship_back_indent) * sin_a + inner_width * sin_flame_left,
     )
     inner_base_right = (
-        g_ship.x - scaled(Cfg.ship_back_indent) * cos_a + inner_width * cos_flame_right,
-        g_ship.y - scaled(Cfg.ship_back_indent) * sin_a + inner_width * sin_flame_right,
+        x - scaled(Cfg.ship_back_indent) * cos_a + inner_width * cos_flame_right,
+        y - scaled(Cfg.ship_back_indent) * sin_a + inner_width * sin_flame_right,
     )
     pygame.draw.polygon(
         surface, (255, 255, 150), [inner_flame_tip, inner_base_left, inner_base_right]
@@ -4626,7 +4691,7 @@ def draw_thruster_flame(
 
 
 def draw_powerup_auras(surface: pygame.Surface) -> None:
-    """Draw auras for active powerups.
+    """Draw auras for active powerups with interpolation.
 
     Args:
         surface: Surface to draw on
@@ -4634,6 +4699,9 @@ def draw_powerup_auras(surface: pygame.Surface) -> None:
     Globals:
         Reads g_ship, g_game_state
     """
+    # Get interpolated ship position
+    ship_x, ship_y, _ = get_interpolated_position(g_ship)
+    
     if g_ship.rapid_fire > 0:
         pulse = calculate_pulse(g_ship.aura_pulse, 1.0, 0.3, 0.7)
         radius = int(35 * pulse * g_scale_factor)
@@ -4641,8 +4709,8 @@ def draw_powerup_auras(surface: pygame.Surface) -> None:
         for i in range(3):
             angle = g_game_state["effects"]["aura_rotation"] + i * 120
             sin_a, cos_a = get_sin_cos(angle)
-            x = g_ship.x + cos_a * radius
-            y = g_ship.y + sin_a * radius
+            x = ship_x + cos_a * radius
+            y = ship_y + sin_a * radius
 
             triangle_size = 5 * g_scale_factor
             points = []
@@ -4659,8 +4727,8 @@ def draw_powerup_auras(surface: pygame.Surface) -> None:
         for i in range(3):
             angle = g_game_state["effects"]["aura_rotation"] * -1.5 + i * 120
             sin_a, cos_a = get_sin_cos(angle)
-            x = g_ship.x + cos_a * radius
-            y = g_ship.y + sin_a * radius
+            x = ship_x + cos_a * radius
+            y = ship_y + sin_a * radius
 
             pygame.draw.circle(
                 surface, (0, 255, 255), (int(x), int(y)), int(3 * g_scale_factor)
@@ -4669,7 +4737,7 @@ def draw_powerup_auras(surface: pygame.Surface) -> None:
 
 
 def draw_powerups(surface: pygame.Surface) -> None:
-    """Draw all powerup entities.
+    """Draw all powerup entities with interpolation.
 
     Args:
         surface: Surface to draw on
@@ -4678,11 +4746,14 @@ def draw_powerups(surface: pygame.Surface) -> None:
         Reads g_powerups
     """
     for powerup in g_powerups:
+        # Get interpolated position
+        x, y, _ = get_interpolated_position(powerup)
+        
         pulse = calculate_pulse(powerup.pulse, 1.0)
         color = Cfg.powerup_types[powerup.type]["color"]
 
         DrawEffects.glow(
-            surface, (powerup.x, powerup.y), 25 * pulse * g_scale_factor, color, pulse
+            surface, (x, y), 25 * pulse * g_scale_factor, color, pulse
         )
 
         symbol_text = g_small_font.render(
@@ -4691,8 +4762,8 @@ def draw_powerups(surface: pygame.Surface) -> None:
         surface.blit(
             symbol_text,
             (
-                int(powerup.x - scaled(Cfg.powerup_symbol_offset_x)),
-                int(powerup.y - scaled(Cfg.powerup_symbol_offset_y)),
+                int(x - scaled(Cfg.powerup_symbol_offset_x)),
+                int(y - scaled(Cfg.powerup_symbol_offset_y)),
             ),
         )
 
@@ -4704,14 +4775,16 @@ def draw_powerups(surface: pygame.Surface) -> None:
                 sin_a, cos_a = get_sin_cos(point_angle)
                 points.append(
                     (
-                        powerup.x + scaled(Cfg.powerup_visual_radius) * cos_a,
-                        powerup.y + scaled(Cfg.powerup_visual_radius) * sin_a,
+                        x + scaled(Cfg.powerup_visual_radius) * cos_a,
+                        y + scaled(Cfg.powerup_visual_radius) * sin_a,
                     )
                 )
             pygame.draw.polygon(surface, color, points, max(1, int(2 * g_scale_factor)))
         else:
+            # Create temporary object for get_polygon_points with interpolated position
+            temp_powerup = type('obj', (object,), {'x': x, 'y': y})()
             points = get_polygon_points(
-                powerup,
+                temp_powerup,
                 Cfg.powerup_hexagon_vertices,
                 scaled(Cfg.powerup_visual_radius),
                 angle_override=powerup.pulse * 20,
@@ -4720,7 +4793,7 @@ def draw_powerups(surface: pygame.Surface) -> None:
 
 
 def draw_bullets(surface: pygame.Surface) -> None:
-    """Draw all bullets.
+    """Draw all bullets with interpolation.
 
     Args:
         surface: Surface to draw on
@@ -4729,6 +4802,9 @@ def draw_bullets(surface: pygame.Surface) -> None:
         Reads g_bullets, g_enemy_bullets
     """
     for bullet in g_bullets:
+        # Get interpolated position
+        x, y, _ = get_interpolated_position(bullet)
+        
         for i, pos in enumerate(bullet.trail):
             if i > 0:
                 alpha = i / len(bullet.trail)
@@ -4739,16 +4815,19 @@ def draw_bullets(surface: pygame.Surface) -> None:
                 pygame.draw.circle(surface, color, (int(pos[0]), int(pos[1])), radius)
 
         DrawEffects.glow(
-            surface, (bullet.x, bullet.y), scaled(Cfg.bullet_radius * 4), (255, 255, 0)
+            surface, (x, y), scaled(Cfg.bullet_radius * 4), (255, 255, 0)
         )
         pygame.draw.circle(
             surface,
             Cfg.colors["bullet"],
-            (int(bullet.x), int(bullet.y)),
+            (int(x), int(y)),
             int(3 * g_scale_factor),
         )
 
     for bullet in g_enemy_bullets:
+        # Get interpolated position
+        x, y, _ = get_interpolated_position(bullet)
+        
         for i, pos in enumerate(bullet.trail):
             if i > 0:
                 alpha = i / len(bullet.trail)
@@ -4760,7 +4839,7 @@ def draw_bullets(surface: pygame.Surface) -> None:
 
         DrawEffects.glow(
             surface,
-            (bullet.x, bullet.y),
+            (x, y),
             scaled(Cfg.bullet_radius * 4) * 0.8,
             (255, 100, 100),
             0.8,
@@ -4768,7 +4847,7 @@ def draw_bullets(surface: pygame.Surface) -> None:
         pygame.draw.circle(
             surface,
             Cfg.colors["enemy_bullet"],
-            (int(bullet.x), int(bullet.y)),
+            (int(x), int(y)),
             int(3 * g_scale_factor),
         )
 
@@ -6610,22 +6689,25 @@ if NUMPY_AVAILABLE:
 
     def numpy_to_pygame_sound(
         numpy_array: np.ndarray, sample_rate: int = 22050
-    ) -> pygame.mixer.Sound:
-        """Convert numpy array to pygame sound object.
+    ) -> Optional[pygame.mixer.Sound]:
+        """Convert numpy array to pygame sound object with robust error handling.
 
         Args:
             numpy_array: Sound samples
             sample_rate: Sample rate (not used but kept for compatibility)
 
         Returns:
-            Pygame Sound object
+            Pygame Sound object or None if conversion fails
         """
-        sound = np.array(numpy_array * 32767, dtype=np.int16)
-        stereo_sound = np.zeros((len(sound), 2), dtype=np.int16)
-        stereo_sound[:, 0] = sound
-        stereo_sound[:, 1] = sound
-
-        return pygame.sndarray.make_sound(stereo_sound)
+        try:
+            sound = np.array(numpy_array * 32767, dtype=np.int16)
+            stereo_sound = np.zeros((len(sound), 2), dtype=np.int16)
+            stereo_sound[:, 0] = sound
+            stereo_sound[:, 1] = sound
+            return pygame.sndarray.make_sound(stereo_sound)
+        except (pygame.error, AttributeError, ValueError) as e:
+            print(f"[numpy_to_pygame_sound] Failed to convert sound: {e}")
+            return None
 
 
 def init_sounds() -> None:
@@ -6658,9 +6740,11 @@ def init_sounds() -> None:
             )
             shoot_sound = apply_envelope(shoot_sound, "exp", 10)
 
-            g_sounds[f"shoot{i+1}"] = numpy_to_pygame_sound(
+            sound = numpy_to_pygame_sound(
                 shoot_sound * Cfg.sound_shoot_volume * Cfg.sound_master_volume
             )
+            if sound is not None:
+                g_sounds[f"shoot{i+1}"] = sound
 
         explosion_configs = {
             "small": {"duration": 0.2, "freq": 800, "rumble": 40, "decay": 8},
@@ -6685,9 +6769,11 @@ def init_sounds() -> None:
 
                 explosion = mix_sounds(crack * 0.5, noise * 0.7, rumble)
 
-                g_sounds[f"explosion_{size}{i+1}"] = numpy_to_pygame_sound(
+                sound = numpy_to_pygame_sound(
                     explosion * Cfg.sound_explosion_volume * Cfg.sound_master_volume
                 )
+                if sound is not None:
+                    g_sounds[f"explosion_{size}{i+1}"] = sound
 
         dash_sweep = generate_sound(0.3, (3000, 500), "sweep")
         dash_noise = generate_sound(0.3, 0, "noise") * 0.2
@@ -6695,13 +6781,17 @@ def init_sounds() -> None:
         dash_sound[: int(0.02 * sample_rate)] *= np.linspace(
             0, 1, int(0.02 * sample_rate)
         )
-        g_sounds["dash"] = numpy_to_pygame_sound(dash_sound * Cfg.sound_master_volume)
+        sound = numpy_to_pygame_sound(dash_sound * Cfg.sound_master_volume)
+        if sound is not None:
+            g_sounds["dash"] = sound
 
         enemy_sweep = generate_sound(0.12, (600, 100), "sweep")
         enemy_sound = apply_envelope(enemy_sweep, "exp", 8)
-        g_sounds["enemy_shoot"] = numpy_to_pygame_sound(
+        sound = numpy_to_pygame_sound(
             enemy_sound * 0.7 * Cfg.sound_master_volume
         )
+        if sound is not None:
+            g_sounds["enemy_shoot"] = sound
 
         enemy_exp = mix_sounds(
             generate_sound(0.3, 150, "sine") * 0.3,
@@ -6709,9 +6799,11 @@ def init_sounds() -> None:
             generate_sound(0.3, 300, "sine") * 0.2,
         )
         enemy_exp = apply_envelope(enemy_exp, "exp", 10)
-        g_sounds["enemy_explosion"] = numpy_to_pygame_sound(
+        sound = numpy_to_pygame_sound(
             enemy_exp * Cfg.enemy_volume * Cfg.sound_master_volume
         )
+        if sound is not None:
+            g_sounds["enemy_explosion"] = sound
 
         crystal_freqs = [523, 659, 784, 1047, 1319, 1568]
         crystal_sound = np.zeros(int(0.5 * sample_rate))
@@ -6723,9 +6815,11 @@ def init_sounds() -> None:
                 tone = apply_envelope(tone, "exp", 3)
                 crystal_sound[start : start + len(tone)] += tone * 0.4
 
-        g_sounds["powerup_crystal"] = numpy_to_pygame_sound(
+        sound = numpy_to_pygame_sound(
             crystal_sound * Cfg.powerup_volume * Cfg.sound_master_volume
         )
+        if sound is not None:
+            g_sounds["powerup_crystal"] = sound
 
         powerup_configs = {
             "life": {"freqs": [523, 659, 784], "duration": 0.3},
@@ -6746,9 +6840,11 @@ def init_sounds() -> None:
                     end = min(start + len(tone), sound_frames)
                     powerup_sound[start:end] += tone[: end - start] * 0.5
 
-            g_sounds[f"powerup_{ptype}"] = numpy_to_pygame_sound(
+            sound = numpy_to_pygame_sound(
                 powerup_sound * Cfg.powerup_volume * Cfg.sound_master_volume
             )
+            if sound is not None:
+                g_sounds[f"powerup_{ptype}"] = sound
 
         thrust_base = generate_sound(1.0, 60, "sine")
         thrust_wobble = generate_sound(1.0, 5, "sine") * 10
@@ -6758,9 +6854,11 @@ def init_sounds() -> None:
         thrust_sound = np.sin(2 * np.pi * thrust_freq * thrust_t)
         thrust_sound += generate_sound(1.0, 0, "noise") * 0.05
 
-        g_sounds["thrust"] = numpy_to_pygame_sound(
+        sound = numpy_to_pygame_sound(
             thrust_sound * Cfg.sound_thrust_volume * Cfg.sound_master_volume
         )
+        if sound is not None:
+            g_sounds["thrust"] = sound
 
         transition_sound = np.zeros(int(0.5 * sample_rate))
         chord_freqs = [392, 523, 659, 784]
@@ -6772,9 +6870,11 @@ def init_sounds() -> None:
                 end = min(start + len(tone), len(transition_sound))
                 transition_sound[start:end] += tone[: end - start] * 0.4
 
-        g_sounds["level_transition"] = numpy_to_pygame_sound(
+        sound = numpy_to_pygame_sound(
             transition_sound * Cfg.sound_master_volume
         )
+        if sound is not None:
+            g_sounds["level_transition"] = sound
 
         Cfg.sound_enabled = True
         print(f"[init_sounds] Sound system initialized: {len(g_sounds)} sounds loaded")
@@ -6862,6 +6962,12 @@ def store_previous_positions() -> None:
     Side effects:
         Adds prev_x, prev_y, prev_angle attributes to entities
     """
+    # Ship
+    if hasattr(g_ship, 'x'):
+        g_ship.prev_x = g_ship.x
+        g_ship.prev_y = g_ship.y
+        g_ship.prev_angle = g_ship.angle
+    
     # Enemies
     for enemy in g_enemies:
         enemy.prev_x = enemy.x
@@ -6873,6 +6979,21 @@ def store_previous_positions() -> None:
         asteroid.prev_x = asteroid.x
         asteroid.prev_y = asteroid.y
         asteroid.prev_angle = asteroid.angle
+        
+    # Bullets
+    for bullet in g_bullets:
+        bullet.prev_x = bullet.x
+        bullet.prev_y = bullet.y
+        
+    # Enemy bullets
+    for bullet in g_enemy_bullets:
+        bullet.prev_x = bullet.x
+        bullet.prev_y = bullet.y
+        
+    # Powerups
+    for powerup in g_powerups:
+        powerup.prev_x = powerup.x
+        powerup.prev_y = powerup.y
 
     # Floating texts
     for text in g_floating_texts:
@@ -7054,12 +7175,10 @@ def update_decoupled_systems(dt: float) -> None:
     """
     timers = g_game_state['update_timers']
 
-    # Spatial grid rebuild at 30Hz - only when dirty
+    # Spatial grid rebuild at 30Hz - always rebuild for moving objects
     timers['grid_rebuild'] += dt
     while timers['grid_rebuild'] >= Cfg.update_intervals['grid_rebuild']:
-        if g_game_state['grid_dirty']:
-            rebuild_spatial_grid()
-            g_game_state['grid_dirty'] = False
+        rebuild_spatial_grid()  # Always rebuild to handle moving objects
         timers['grid_rebuild'] -= Cfg.update_intervals['grid_rebuild']
 
     # AI at 15Hz
