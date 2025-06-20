@@ -65,6 +65,7 @@ import json
 import os
 from enum import Enum
 from functools import lru_cache
+from collections import OrderedDict
 from typing import (
     Dict,
     List,
@@ -674,6 +675,22 @@ class Cfg:
     frame_visibility_check_modulo: int = 4
     controller_input_check_modulo: int = 2
 
+    # Fixed timestep performance optimization
+    PHYSICS_DT: float = 1 / 60.0  # 60Hz physics timestep
+
+    # Update intervals (in seconds) for decoupled systems
+    update_intervals = {
+        "ai": 1 / 15.0,  # 15Hz - Smooth enough for enemies
+        "particles": 1 / 30.0,  # 30Hz - Good visual smoothness
+        "ui": 1 / 20.0,  # 20Hz - UI feels responsive
+        "effects": 1 / 20.0,  # 20Hz - Visual effects
+        "grid_rebuild": 1 / 30.0,  # 30Hz - Spatial grid rebuild
+    }
+
+    # Debug flags for performance testing
+    enable_interpolation: bool = True  # Toggle with F1 key for A/B testing
+    show_update_rates: bool = False  # Toggle with F2 to see Hz rates
+
 
 # === [GLOBAL STATE VARIABLES] ===
 
@@ -751,6 +768,16 @@ g_game_state = {
     # Menu state
     "show_upgrade_menu": False,
     "selected_upgrade": 0,
+    # Fixed timestep system
+    "physics_accumulator": 0.0,
+    "render_alpha": 1.0,
+    "update_timers": {
+        "ai": 0.0,  # Enemy AI at 15Hz
+        "particles": 0.0,  # Complex particles at 30Hz
+        "ui": 0.0,  # UI updates at 20Hz
+        "effects": 0.0,  # Visual effects at 20Hz
+        "grid_rebuild": 0.0,  # Spatial grid at 30Hz
+    },
 }
 
 # Ship state (initialized in init_ship_state())
@@ -771,6 +798,10 @@ g_vignette_surface: Optional[pygame.Surface] = None
 
 # Sounds
 g_sounds: Dict[str, pygame.mixer.Sound] = {}
+
+# Performance optimization caches
+g_glow_cache: OrderedDict = OrderedDict()
+MAX_GLOW_CACHE_SIZE = 100
 
 # === [HELPER FUNCTIONS] ===
 
@@ -961,9 +992,40 @@ def safe_operation(
     except (pygame.error, ValueError, KeyError) as e:
         print(f"[{operation_name}] Error: {e}")
         return None
-    except Exception as e:
-        print(f"[{operation_name}] Unexpected error: {e}")
-        return None
+
+
+def get_cached_glow(
+    radius: int, color: Tuple[int, int, int], alpha: int
+) -> pygame.Surface:
+    """Get cached glow surface with proper LRU eviction.
+
+    Args:
+        radius: Glow radius in pixels
+        color: RGB color tuple
+        alpha: Alpha transparency value
+
+    Returns:
+        Cached or newly created glow surface
+    """
+    cache_key = (radius, color, alpha)
+
+    # Check if exists and move to end (most recently used)
+    if cache_key in g_glow_cache:
+        g_glow_cache.move_to_end(cache_key)
+        return g_glow_cache[cache_key]
+
+    # Create new surface
+    surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+    pygame.draw.circle(surface, (*color, alpha), (radius, radius), radius)
+
+    # Add to cache
+    g_glow_cache[cache_key] = surface
+
+    # Evict oldest if over limit
+    if len(g_glow_cache) > MAX_GLOW_CACHE_SIZE:
+        g_glow_cache.popitem(last=False)  # Remove oldest
+
+    return surface
 
 
 # === [DRAWING EFFECTS SYSTEM] ===
@@ -1182,23 +1244,10 @@ class ParticlePool:
             particle.y += particle.vy * time_scale
             particle.life -= time_scale
 
-            # Special behavior for streak particles
-            if (
-                particle.type == ParticleType.STREAK
-                and particle.life > Cfg.particle_streak_min_life
-            ):
-                dx = g_ship.x - particle.x
-                dy = g_ship.y - particle.y
-                dist_sq = dx * dx + dy * dy
-                if dist_sq > Cfg.particle_streak_attraction_distance:
-                    dist = math.sqrt(dist_sq)
-                    attraction = Cfg.particle_streak_attraction_force
-                    particle.vx += (dx / dist) * attraction * time_scale
-                    particle.vy += (dy / dist) * attraction * time_scale
-            else:
-                friction_factor = 0.95**time_scale
-                particle.vx *= friction_factor
-                particle.vy *= friction_factor
+            # Apply friction to all particles
+            friction_factor = 0.95**time_scale
+            particle.vx *= friction_factor
+            particle.vy *= friction_factor
 
             if particle.life > 0:
                 new_active.append(idx)
@@ -6771,47 +6820,338 @@ def handle_input(
     return keys, controller_input
 
 
+# === [FIXED TIMESTEP PERFORMANCE OPTIMIZATION FUNCTIONS] ===
+
+
+def store_previous_positions() -> None:
+    """Store previous positions for smooth interpolation.
+    
+    Side effects:
+        Adds prev_x, prev_y, prev_angle attributes to entities
+    """
+    # Enemies
+    for enemy in g_enemies:
+        enemy.prev_x = enemy.x
+        enemy.prev_y = enemy.y
+        enemy.prev_angle = enemy.angle
+
+    # Asteroids
+    for asteroid in g_asteroids:
+        asteroid.prev_x = asteroid.x
+        asteroid.prev_y = asteroid.y
+        asteroid.prev_angle = asteroid.angle
+
+    # Floating texts
+    for text in g_floating_texts:
+        text.prev_x = text.x
+        text.prev_y = text.y
+
+
+def get_interpolated_position(obj: Any) -> Tuple[float, float, float]:
+    """Get interpolated position for smooth rendering.
+    
+    Args:
+        obj: Object with position and optional previous position
+        
+    Returns:
+        Tuple of (interpolated_x, interpolated_y, interpolated_angle)
+    """
+    if not Cfg.enable_interpolation:
+        return obj.x, obj.y, getattr(obj, 'angle', 0)
+        
+    alpha = g_game_state.get('render_alpha', 1.0)
+    
+    if hasattr(obj, 'prev_x'):
+        x = obj.prev_x + (obj.x - obj.prev_x) * alpha
+        y = obj.prev_y + (obj.y - obj.prev_y) * alpha
+        
+        # Handle angle wraparound for smooth rotation
+        if hasattr(obj, 'angle') and hasattr(obj, 'prev_angle'):
+            angle_diff = (obj.angle - obj.prev_angle + 180) % 360 - 180
+            angle = (obj.prev_angle + angle_diff * alpha) % 360
+        else:
+            angle = getattr(obj, 'angle', 0)
+        
+        return x, y, angle
+    
+    return obj.x, obj.y, getattr(obj, 'angle', 0)
+
+
+def rebuild_spatial_grid() -> None:
+    """Rebuild spatial grid for collision detection optimization."""
+    g_spatial_grid.clear()
+    
+    # Insert asteroids
+    for asteroid in g_asteroids:
+        g_spatial_grid.insert(asteroid, asteroid.radius)
+    
+    # Insert enemies
+    for enemy in g_enemies:
+        g_spatial_grid.insert(enemy, enemy.radius)
+    
+    # Insert powerups
+    for powerup in g_powerups:
+        g_spatial_grid.insert(powerup, Cfg.powerup_pickup_radius)
+
+
+def update_particle_attraction(particle: Particle, dt: float) -> None:
+    """Optimized particle attraction with early exit.
+    
+    Args:
+        particle: Particle to update
+        dt: Delta time for frame-rate independent updates
+    """
+    if particle.type != ParticleType.STREAK or particle.life <= Cfg.particle_streak_min_life:
+        return
+    
+    # Manhattan distance for quick reject
+    quick_dist = abs(g_ship.x - particle.x) + abs(g_ship.y - particle.y)
+    if quick_dist > Cfg.particle_streak_attraction_distance * 1.5:
+        return
+    
+    # Only then do expensive calculations
+    dx = g_ship.x - particle.x
+    dy = g_ship.y - particle.y
+    dist_sq = dx * dx + dy * dy
+    
+    if dist_sq < Cfg.particle_streak_attraction_distance ** 2:
+        dist = math.sqrt(dist_sq)
+        attraction = Cfg.particle_streak_attraction_force * dt * 30  # Scale by dt
+        particle.vx += (dx / dist) * attraction
+        particle.vy += (dy / dist) * attraction
+
+
+def update_physics_only(dt: float) -> None:
+    """Update only position/velocity - no AI or complex calculations.
+    
+    Args:
+        dt: Delta time for physics updates
+    """
+    # Asteroids - simple physics
+    for asteroid in g_asteroids:
+        asteroid.x += asteroid.vx * g_game_state['time_scale']
+        asteroid.y += asteroid.vy * g_game_state['time_scale']
+        asteroid.angle += asteroid.spin * g_game_state['time_scale']
+        wrap_position(asteroid)
+        if asteroid.hit_flash > 0:
+            asteroid.hit_flash -= dt * 60  # Convert to frame-based
+
+    # Enemies - movement only, no AI decisions
+    for enemy in g_enemies:
+        enemy.x += enemy.vx * g_game_state['time_scale']
+        enemy.y += enemy.vy * g_game_state['time_scale']
+        wrap_position(enemy)
+        enemy.fire_cooldown -= dt * 60
+        if enemy.hit_flash > 0:
+            enemy.hit_flash -= dt * 60
+
+    # Bullets always update at full rate
+    update_bullets()
+    update_enemy_bullets()
+
+    # Powerups
+    global g_powerups
+    for powerup in g_powerups:
+        powerup.x += powerup.vx * g_game_state['time_scale']
+        powerup.y += powerup.vy * g_game_state['time_scale']
+        wrap_position(powerup)
+        powerup.lifetime -= dt * 60
+    g_powerups = [p for p in g_powerups if p.lifetime > 0]
+
+
+def update_ai_systems(dt: float) -> None:
+    """Update AI systems at reduced frequency.
+    
+    Args:
+        dt: Delta time for AI updates
+    """
+    for enemy in g_enemies:
+        update_enemy_ai(enemy)
+
+
+def update_complex_particles(dt: float) -> None:
+    """Update complex particle effects at reduced frequency.
+    
+    Args:
+        dt: Delta time for particle updates
+    """
+    # Update particle attraction for streak particles
+    for particle in g_particle_pool.get_active_particles():
+        if particle.active:
+            update_particle_attraction(particle, dt)
+
+
+def update_ui_systems(dt: float) -> None:
+    """Update UI elements at reduced frequency.
+    
+    Args:
+        dt: Delta time for UI updates
+    """
+    global g_floating_texts
+    
+    # Update floating texts with proper dt scaling
+    for text in g_floating_texts:
+        text.y += text.vy * dt * 20  # Scale for 20Hz
+        text.life -= dt * 20
+        text.vy *= (0.95 ** (dt * 20))  # Adjust friction
+    
+    # Remove dead texts
+    g_floating_texts = [t for t in g_floating_texts if t.life > 0]
+    
+    # Update combo system
+    update_combo_system()
+
+
+def update_visual_effects_complex(dt: float) -> None:
+    """Update complex visual effects at reduced frequency.
+    
+    Args:
+        dt: Delta time for effects updates
+    """
+    # Update aura rotation
+    g_game_state["effects"]["aura_rotation"] += dt * 60 * Cfg.powerup_aura_rotation_speed
+    g_game_state["effects"]["aura_rotation"] %= 360
+
+
+def update_decoupled_systems(dt: float) -> None:
+    """Update non-critical systems at lower frequencies.
+    
+    Args:
+        dt: Delta time for decoupled updates
+    """
+    timers = g_game_state['update_timers']
+    
+    # Spatial grid rebuild at 30Hz
+    timers['grid_rebuild'] += dt
+    while timers['grid_rebuild'] >= Cfg.update_intervals['grid_rebuild']:
+        rebuild_spatial_grid()
+        timers['grid_rebuild'] -= Cfg.update_intervals['grid_rebuild']
+    
+    # AI at 15Hz
+    timers['ai'] += dt
+    while timers['ai'] >= Cfg.update_intervals['ai']:
+        update_ai_systems(Cfg.update_intervals['ai'])
+        timers['ai'] -= Cfg.update_intervals['ai']
+    
+    # Particles at 30Hz
+    timers['particles'] += dt
+    while timers['particles'] >= Cfg.update_intervals['particles']:
+        update_complex_particles(Cfg.update_intervals['particles'])
+        timers['particles'] -= Cfg.update_intervals['particles']
+    
+    # UI at 20Hz
+    timers['ui'] += dt
+    while timers['ui'] >= Cfg.update_intervals['ui']:
+        update_ui_systems(Cfg.update_intervals['ui'])
+        timers['ui'] -= Cfg.update_intervals['ui']
+    
+    # Visual effects at 20Hz
+    timers['effects'] += dt
+    while timers['effects'] >= Cfg.update_intervals['effects']:
+        update_visual_effects_complex(Cfg.update_intervals['effects'])
+        timers['effects'] -= Cfg.update_intervals['effects']
+
+
+def handle_level_completion() -> None:
+    """Check for level completion and trigger transitions."""
+    if not g_asteroids and g_game_state['effects']['level_transition'] == 0:
+        g_game_state['level'] += 1
+        g_game_state['effects']['level_transition'] = Cfg.level_transition_duration
+        g_game_state['effects']['level_transition_text'] = f"LEVEL {g_game_state['level']}"
+        g_game_state['effects']['screen_shake'] = 10
+        play_sound('level_transition', g_screen_width // 2)
+    
+    if g_game_state['effects']['level_transition'] > 0:
+        g_game_state['effects']['level_transition'] = update_timer(
+            g_game_state['effects']['level_transition']
+        )
+        if g_game_state['effects']['level_transition'] == 0:
+            start_new_level()
+
+
 def update_game_state(keys: dict, controller_input: Dict[str, Any]) -> None:
-    """Update all game logic.
+    """Update all game systems with fixed timestep optimization.
+
+    Critical systems (physics, collision, ship) remain at 60Hz for responsiveness.
+    Non-critical systems (AI, particles, UI) run at lower frequencies for performance.
 
     Args:
         keys: Keyboard state
         controller_input: Controller state
 
     Side effects:
-        Updates all game objects and systems
+        Updates all game objects and systems using fixed timestep approach
 
     Globals:
         Reads/writes various game state
     """
-    update_visual_effects()
-    update_finisher()
-
-    if g_game_state["effects"]["level_transition"] == 0:
-        update_ship(keys, controller_input)
-        update_game_objects()
-        handle_collisions()
-
-    if not g_asteroids and g_game_state["effects"]["level_transition"] == 0:
-        g_game_state["level"] += 1
-        g_game_state["effects"]["level_transition"] = Cfg.level_transition_duration
-        g_game_state["effects"][
-            "level_transition_text"
-        ] = f"LEVEL {g_game_state['level']}"
-        g_game_state["effects"]["screen_shake"] = 10
-        play_sound("level_transition", g_screen_width // 2)
-
-    if g_game_state["effects"]["level_transition"] > 0:
-        g_game_state["effects"]["level_transition"] = update_timer(
-            g_game_state["effects"]["level_transition"]
-        )
+    frame_start_time = pygame.time.get_ticks() / 1000.0
+    
+    # Calculate frame time with capping
+    if 'last_frame_time' not in g_game_state:
+        g_game_state['last_frame_time'] = frame_start_time
+    
+    dt = min(frame_start_time - g_game_state['last_frame_time'], 0.05)  # Cap at 50ms
+    g_game_state['last_frame_time'] = frame_start_time
+    
+    # Accumulate physics time
+    g_game_state['physics_accumulator'] += dt
+    
+    # Store previous positions for interpolation before physics updates
+    if Cfg.enable_interpolation:
+        store_previous_positions()
+    
+    # Fixed physics timestep loop - CRITICAL systems remain at 60Hz
+    physics_updates = 0
+    while g_game_state['physics_accumulator'] >= Cfg.PHYSICS_DT and physics_updates < 4:
+        # === 60Hz CRITICAL SYSTEMS ===
+        
+        # Ship controls - must be responsive
         if g_game_state["effects"]["level_transition"] == 0:
-            start_new_level()
-
+            update_ship(keys, controller_input)
+        
+        # Physics for all objects
+        update_physics_only(Cfg.PHYSICS_DT)
+        
+        # Collision detection (uses spatial grid)
+        if g_game_state["effects"]["level_transition"] == 0:
+            handle_collisions()
+        
+        # Always-responsive systems
+        update_finisher()
+        
+        # Ship dash trail (responsive movement)
+        update_dash_trail()
+        update_ship_timers()
+        
+        # Subtract physics timestep
+        g_game_state['physics_accumulator'] -= Cfg.PHYSICS_DT
+        physics_updates += 1
+    
+    # Calculate render interpolation alpha
+    g_game_state['render_alpha'] = g_game_state['physics_accumulator'] / Cfg.PHYSICS_DT
+    
+    # === DECOUPLED SYSTEMS (Variable frequency) ===
+    update_decoupled_systems(dt)
+    
+    # Level completion logic
+    handle_level_completion()
+    
+    # Damage flash effects
     if g_game_state["effects"]["damage_flash"] > 0:
         g_game_state["effects"]["damage_flash"] = update_timer(
             g_game_state["effects"]["damage_flash"], 2
         )
+    
+    # Always update visual effects for responsiveness
+    update_visual_effects()
+    
+    # Finisher meter (responsive for player feedback)
+    update_finisher_meter()
+    
+    # Performance debug info
+    if Cfg.show_update_rates and g_game_state['frame_count'] % 60 == 0:
+        print(f"Physics updates: {physics_updates}, Frame time: {dt*1000:.1f}ms")
 
 
 def run_game_loop() -> None:
@@ -6957,6 +7297,20 @@ def handle_game_keys(event: pygame.event.Event) -> None:
     elif event.key == pygame.K_u:
         g_game_state["show_upgrade_menu"] = True
         g_game_state["selected_upgrade"] = 0
+    elif event.key == pygame.K_F1:
+        # Toggle interpolation for A/B testing
+        Cfg.enable_interpolation = not Cfg.enable_interpolation
+        status = "ON" if Cfg.enable_interpolation else "OFF"
+        print(f"[DEBUG] Interpolation: {status}")
+        create_floating_text(g_screen_width // 2, g_screen_height // 2, 
+                           f"Interpolation: {status}", Cfg.colors["white"])
+    elif event.key == pygame.K_F2:
+        # Toggle performance debug info
+        Cfg.show_update_rates = not Cfg.show_update_rates
+        status = "ON" if Cfg.show_update_rates else "OFF"
+        print(f"[DEBUG] Performance Display: {status}")
+        create_floating_text(g_screen_width // 2, g_screen_height // 2 + 30, 
+                           f"Performance Debug: {status}", Cfg.colors["white"])
 
 
 def toggle_pause() -> None:
